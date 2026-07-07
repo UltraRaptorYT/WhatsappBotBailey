@@ -18,6 +18,7 @@ let currentQr = null;
 let connectionStatus = "starting";
 let reconnectTimer = null;
 let lastBotError = null;
+let botStarting = false;
 
 function getErrorMessage(error) {
   return error?.stack || error?.message || String(error);
@@ -28,16 +29,32 @@ function scheduleReconnect() {
     return;
   }
 
+  connectionStatus = "starting";
   console.log("Reconnecting in 3 seconds");
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     startBot().catch((error) => {
+      botStarting = false;
       lastBotError = getErrorMessage(error);
       connectionStatus = "disconnected";
       console.error("Reconnect failed:", error);
       scheduleReconnect();
     });
   }, 3000);
+}
+
+function cleanupSocket() {
+  if (!sock) {
+    return;
+  }
+
+  try {
+    sock.ev.removeAllListeners("creds.update");
+    sock.ev.removeAllListeners("connection.update");
+    sock.ev.removeAllListeners("messages.upsert");
+  } catch (error) {
+    console.error("Socket cleanup warning:", error.message);
+  }
 }
 
 app.use(express.json());
@@ -282,6 +299,15 @@ app.post("/send", requireAdmin, async (req, res) => {
 });
 
 async function startBot() {
+  if (botStarting) {
+    return;
+  }
+
+  botStarting = true;
+  cleanupSocket();
+  currentQr = null;
+  connectionStatus = "starting";
+
   const { state, saveCreds } = await useSupabaseAuthState();
   const { version, isLatest } = await fetchLatestBaileysVersion();
 
@@ -294,6 +320,8 @@ async function startBot() {
     printQRInTerminal: false,
     logger: P({ level: "silent" })
   });
+
+  botStarting = false;
 
   sock.ev.on("creds.update", saveCreds);
 
@@ -319,6 +347,7 @@ async function startBot() {
 
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const loggedOut = statusCode === DisconnectReason.loggedOut;
+      const restartRequired = statusCode === DisconnectReason.restartRequired;
 
       lastBotError = lastDisconnect?.error
         ? getErrorMessage(lastDisconnect.error)
@@ -328,6 +357,10 @@ async function startBot() {
       if (loggedOut) {
         console.log("Logged out. Clear Supabase auth rows and scan QR again.");
         return;
+      }
+
+      if (restartRequired) {
+        console.log("WhatsApp requested a stream restart.");
       }
 
       scheduleReconnect();
@@ -356,6 +389,7 @@ app.listen(port, () => {
 });
 
 startBot().catch((error) => {
+  botStarting = false;
   connectionStatus = "disconnected";
   lastBotError = getErrorMessage(error);
   console.error("Failed to start WhatsApp bot:", error);
