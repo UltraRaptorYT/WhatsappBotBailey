@@ -348,6 +348,7 @@ async function startBot() {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const loggedOut = statusCode === DisconnectReason.loggedOut;
       const restartRequired = statusCode === DisconnectReason.restartRequired;
+      const connectionReplaced = statusCode === DisconnectReason.connectionReplaced;
 
       lastBotError = lastDisconnect?.error
         ? getErrorMessage(lastDisconnect.error)
@@ -356,6 +357,11 @@ async function startBot() {
 
       if (loggedOut) {
         console.log("Logged out. Clear Supabase auth rows and scan QR again.");
+        return;
+      }
+
+      if (connectionReplaced) {
+        console.log("Connection conflict. Stop other running bot instances that use this SESSION_ID, then restart this service.");
         return;
       }
 

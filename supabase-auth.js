@@ -47,6 +47,25 @@ export async function useSupabaseAuthState() {
     return decode(data?.value);
   }
 
+  async function readManyData(keys) {
+    if (!keys.length) {
+      return new Map();
+    }
+
+    const { data, error } = await supabase
+      .from(TABLE_NAME)
+      .select("key,value")
+      .eq("session_id", sessionId)
+      .in("key", keys);
+
+    if (error) {
+      console.error("Supabase bulk read error:", error.message);
+      return new Map();
+    }
+
+    return new Map((data || []).map((row) => [row.key, decode(row.value)]));
+  }
+
   async function writeData(key, value) {
     const { error } = await supabase
       .from(TABLE_NAME)
@@ -65,6 +84,28 @@ export async function useSupabaseAuthState() {
     }
   }
 
+  async function writeManyData(entries) {
+    if (!entries.length) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const rows = entries.map(([key, value]) => ({
+      session_id: sessionId,
+      key,
+      value: encode(value),
+      updated_at: now
+    }));
+
+    const { error } = await supabase
+      .from(TABLE_NAME)
+      .upsert(rows, { onConflict: "session_id,key" });
+
+    if (error) {
+      console.error("Supabase bulk write error:", error.message);
+    }
+  }
+
   async function removeData(key) {
     const { error } = await supabase
       .from(TABLE_NAME)
@@ -77,6 +118,22 @@ export async function useSupabaseAuthState() {
     }
   }
 
+  async function removeManyData(keys) {
+    if (!keys.length) {
+      return;
+    }
+
+    const { error } = await supabase
+      .from(TABLE_NAME)
+      .delete()
+      .eq("session_id", sessionId)
+      .in("key", keys);
+
+    if (error) {
+      console.error("Supabase bulk remove error:", error.message);
+    }
+  }
+
   const storedCreds = await readData("creds");
   const creds = storedCreds || initAuthCreds();
 
@@ -86,32 +143,41 @@ export async function useSupabaseAuthState() {
       keys: {
         get: async (type, ids) => {
           const data = {};
+          const keys = ids.map((id) => `${type}-${id}`);
+          const stored = await readManyData(keys);
 
-          await Promise.all(
-            ids.map(async (id) => {
-              let value = await readData(`${type}-${id}`);
+          for (const id of ids) {
+            let value = stored.get(`${type}-${id}`);
 
-              if (type === "app-state-sync-key" && value) {
-                value = proto.Message.AppStateSyncKeyData.fromObject(value);
-              }
+            if (type === "app-state-sync-key" && value) {
+              value = proto.Message.AppStateSyncKeyData.fromObject(value);
+            }
 
-              data[id] = value;
-            })
-          );
+            data[id] = value;
+          }
 
           return data;
         },
         set: async (data) => {
-          const tasks = [];
+          const writes = [];
+          const removals = [];
 
           for (const [type, entries] of Object.entries(data)) {
             for (const [id, value] of Object.entries(entries)) {
               const key = `${type}-${id}`;
-              tasks.push(value ? writeData(key, value) : removeData(key));
+
+              if (value) {
+                writes.push([key, value]);
+              } else {
+                removals.push(key);
+              }
             }
           }
 
-          await Promise.all(tasks);
+          await Promise.all([
+            writeManyData(writes),
+            removeManyData(removals)
+          ]);
         }
       }
     },

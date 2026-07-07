@@ -209,6 +209,16 @@ Admin token
 
 Baileys auth/session data is sensitive. Anyone with the session can control the linked WhatsApp session. Keep the Supabase service role key private and use a long random `ADMIN_TOKEN`.
 
+## Avoid Session Conflicts
+
+Only run one bot process per `SESSION_ID`. If you run the bot locally and on Render at the same time with `SESSION_ID=main`, WhatsApp may disconnect one process with:
+
+```txt
+Stream Errored (conflict)
+```
+
+Stop the local process before starting Render, or use a different `SESSION_ID` for experiments.
+
 ## Render Free Notes
 
 Render Free is not a perfect 24/7 worker platform. A 5-minute keep-alive reduces sleeping, but the app may still restart. Supabase-backed auth is the important part: after normal restarts, the bot should reconnect without another QR scan.
