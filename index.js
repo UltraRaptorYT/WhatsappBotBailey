@@ -91,6 +91,44 @@ function cleanPhoneToJid(phone) {
   return digits ? `${digits}@s.whatsapp.net` : "";
 }
 
+function getPhoneDigitsFromJid(jid) {
+  if (!jid?.endsWith("@s.whatsapp.net")) {
+    return "";
+  }
+
+  return jid.replace("@s.whatsapp.net", "").replace(/\D/g, "");
+}
+
+async function validateWhatsAppUser(jid) {
+  if (!jid.endsWith("@s.whatsapp.net")) {
+    return { ok: true };
+  }
+
+  const digits = getPhoneDigitsFromJid(jid);
+
+  if (digits.length < 8 || digits.length > 15) {
+    return {
+      ok: false,
+      error: "Invalid phone number format"
+    };
+  }
+
+  const matches = await sock.onWhatsApp(jid);
+  const match = matches?.[0];
+
+  if (!match?.exists) {
+    return {
+      ok: false,
+      error: "Phone number is not on WhatsApp"
+    };
+  }
+
+  return {
+    ok: true,
+    jid: match.jid || jid
+  };
+}
+
 function getFileNameFromUrl(url) {
   try {
     const pathname = new URL(url).pathname;
@@ -342,11 +380,18 @@ app.post("/send", requireAdmin, async (req, res) => {
   }
 
   try {
-    await sock.sendMessage(to, payload.message);
-    console.log(`Send message success: ${to}`);
+    const validation = await validateWhatsAppUser(to);
+
+    if (!validation.ok) {
+      return res.status(400).json({ ok: false, to, error: validation.error });
+    }
+
+    const validatedTo = validation.jid || to;
+    await sock.sendMessage(validatedTo, payload.message);
+    console.log(`Send message success: ${validatedTo}`);
     res.json({
       ok: true,
-      to,
+      to: validatedTo,
       type: payload.messageType,
       text: payload.responseText
     });
