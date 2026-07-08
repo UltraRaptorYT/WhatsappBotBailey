@@ -53,6 +53,7 @@ type QueueItem = {
   phone: string;
   text: string;
   file?: UploadFile;
+  url?: string;
   status: QueueStatus;
   attempts: number;
   lastError?: string;
@@ -121,23 +122,92 @@ function parseCsv(text: string) {
   return rows.filter((items) => items.some((item) => item.trim()));
 }
 
+function cellToText(value: unknown) {
+  if (value == null) {
+    return "";
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+
+    if (typeof record.text === "string") {
+      return record.text;
+    }
+
+    if (typeof record.hyperlink === "string") {
+      return record.hyperlink;
+    }
+
+    if (Array.isArray(record.richText)) {
+      return record.richText
+        .map((part) => (typeof part?.text === "string" ? part.text : ""))
+        .join("");
+    }
+  }
+
+  return String(value);
+}
+
+function replaceTemplateColumns(template: string, headers: string[], row: string[]) {
+  return headers.reduce((message, header, index) => {
+    const value = row[index] || "";
+    return message.split(`{${header}}`).join(value);
+  }, template);
+}
+
+function getHeaderIndex(headers: string[], names: string[]) {
+  const normalized = headers.map((header) => header.trim().toLowerCase());
+  return names
+    .map((name) => normalized.indexOf(name.toLowerCase()))
+    .find((index) => index >= 0) ?? -1;
+}
+
+function normalizePhone(value: string) {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return "";
+  }
+
+  const digits = trimmed.replace(/\D/g, "");
+
+  if (!trimmed.startsWith("+") && digits.length === 8) {
+    return `65${digits}`;
+  }
+
+  return digits;
+}
+
 function rowsToQueueItems(rows: string[][], defaultText: string, file?: UploadFile) {
   if (!rows.length) {
     return [];
   }
 
-  const headers = rows[0].map((header) => header.trim().toLowerCase());
-  const hasHeader = headers.includes("phone") || headers.includes("text") || headers.includes("message");
+  const headers = rows[0].map((header) => header.trim());
+  const lowerHeaders = headers.map((header) => header.toLowerCase());
+  const hasHeader =
+    lowerHeaders.includes("mobile number") ||
+    lowerHeaders.includes("phone") ||
+    lowerHeaders.includes("text") ||
+    lowerHeaders.includes("message");
   const dataRows = hasHeader ? rows.slice(1) : rows;
-  const phoneIndex = hasHeader ? Math.max(headers.indexOf("phone"), headers.indexOf("number")) : 0;
-  const textIndex = hasHeader
-    ? headers.findIndex((header) => ["text", "message", "caption"].includes(header))
-    : 1;
+  const phoneIndex = hasHeader
+    ? getHeaderIndex(headers, ["Mobile Number", "phone", "number"])
+    : 0;
+  const textIndex = hasHeader ? getHeaderIndex(headers, ["text", "message", "caption"]) : 1;
+  const imageUrlIndex = hasHeader ? getHeaderIndex(headers, ["ImageURL", "Image URL", "image"]) : -1;
 
   return dataRows
     .map((row) => {
-      const phone = String(row[phoneIndex] || "").replace(/\D/g, "");
+      const phone = normalizePhone(String(row[phoneIndex] || ""));
       const rowText = textIndex >= 0 ? String(row[textIndex] || "").trim() : "";
+      const template = rowText || defaultText;
+      const message = hasHeader ? replaceTemplateColumns(template, headers, row) : template;
+      const imageUrl = imageUrlIndex >= 0 ? String(row[imageUrlIndex] || "").trim() : "";
 
       if (!phone) {
         return null;
@@ -146,8 +216,9 @@ function rowsToQueueItems(rows: string[][], defaultText: string, file?: UploadFi
       return {
         id: uid(),
         phone,
-        text: rowText || defaultText,
+        text: message,
         file,
+        url: imageUrl || undefined,
         status: "queued" as QueueStatus,
         attempts: 0,
         createdAt: new Date().toISOString()
@@ -281,7 +352,7 @@ async function readRecipientsFile(file: File, defaultText: string, attachment?: 
   const rows: string[][] = [];
   sheet.eachRow((row) => {
     const values = Array.isArray(row.values) ? row.values : [];
-    rows.push(values.slice(1).map((value) => (value == null ? "" : String(value))));
+    rows.push(values.slice(1).map(cellToText));
   });
 
   return rowsToQueueItems(rows, defaultText, attachment);
@@ -456,6 +527,8 @@ export default function Home() {
       payload.url = uploaded.url;
       payload.fileName = uploaded.fileName || attachment.fileName;
       payload.mimetype = uploaded.mimetype || attachment.mimetype;
+    } else if (item.url) {
+      payload.url = item.url;
     }
 
     return callApi("queue", endpoints.send, "POST", payload);
@@ -841,8 +914,9 @@ export default function Home() {
               </div>
             ) : null}
             <p className="hint">
-              Recipient file columns: `phone` and optional `text`. Without headers, column 1 is phone
-              and column 2 is text.
+              Recipient file columns: `Mobile Number` or `phone`, optional `text`, and optional
+              `ImageURL`. Message templates can use placeholders like {"{Name}"} or{" "}
+              {"{Mobile Number}"}.
             </p>
           </section>
         </TabsContent>
@@ -898,7 +972,7 @@ export default function Home() {
                 <span>{item.text || item.file?.fileName || "No text"}</span>
               </div>
               <div>
-                <span>{item.file ? item.file.fileName : "text"}</span>
+                <span>{item.file ? item.file.fileName : item.url ? item.url : "text"}</span>
                 <span>{item.status} · attempts {item.attempts}</span>
                 {item.lastError ? <span>{item.lastError}</span> : null}
                 <div className="itemActions">

@@ -203,12 +203,16 @@ The dashboard uses shadcn-style UI components and includes:
 Bulk recipient files should include:
 
 ```txt
-phone,text
-6591234567,Hello from the dashboard
-6597654321,Another message
+Mobile Number,Name,text,ImageURL
+91234567,Alice,"Dear {Name}, your number is {Mobile Number}.",https://example.com/image.png
+98765432,Ben,"Dear {Name}, your number is {Mobile Number}.",
 ```
 
-Without headers, column 1 is treated as `phone` and column 2 as `text`.
+The dashboard replaces `{Column Name}` placeholders using the current Excel/CSV row, similar to the old Python bot. For example, `{Name}` is replaced from the `Name` column.
+
+`Mobile Number` is supported for compatibility with the old bot. If it contains an 8-digit Singapore number without `+65`, the dashboard prefixes `65` automatically. Without headers, column 1 is treated as `phone` and column 2 as `text`.
+
+If an `ImageURL` column is present, that URL is sent for that specific row unless a shared upload file is selected.
 
 For attachment uploads, set these dashboard server-side environment variables:
 
