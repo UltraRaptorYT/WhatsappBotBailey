@@ -194,7 +194,7 @@ The dashboard uses shadcn-style UI components and includes:
 - Health/status checks
 - QR page shortcut
 - Single message tab with optional image/document upload
-- Bulk message tab for `.csv` or `.xlsx` recipient import
+- Bulk message tab for staging and loading `.csv` or `.xlsx` recipients into the queue
 - Shared image/document upload for bulk sends
 - Persistent browser-side send queue using `localStorage`
 - Health-check before each queued send, so failed or disconnected runs can be resumed

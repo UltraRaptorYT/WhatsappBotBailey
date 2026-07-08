@@ -396,6 +396,8 @@ export default function Home() {
   const [singleFile, setSingleFile] = useState<UploadFile | undefined>();
   const [bulkText, setBulkText] = useState("Hello from dashboard");
   const [bulkFile, setBulkFile] = useState<UploadFile | undefined>();
+  const [bulkRecipientFile, setBulkRecipientFile] = useState<File | undefined>();
+  const [bulkRecipientName, setBulkRecipientName] = useState("");
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [running, setRunning] = useState(false);
   const [busyAction, setBusyAction] = useState("");
@@ -634,8 +636,11 @@ export default function Home() {
     }
   }
 
-  async function importRecipients(file?: File) {
+  async function loadBulkIntoQueue() {
+    const file = bulkRecipientFile;
+
     if (!file) {
+      setResult({ ok: false, error: "Choose a CSV or Excel file first" });
       return;
     }
 
@@ -657,6 +662,21 @@ export default function Home() {
       });
     } finally {
       setBusyAction("");
+    }
+  }
+
+  function stageBulkRecipients(file?: File) {
+    setBulkRecipientFile(file);
+    setBulkRecipientName(file?.name || "");
+
+    if (file) {
+      setResult({
+        ok: true,
+        data: {
+          staged: file.name,
+          action: "Click Load Into Queue to import recipients"
+        }
+      });
     }
   }
 
@@ -885,7 +905,7 @@ export default function Home() {
                   id="bulkRecipients"
                   type="file"
                   accept=".csv,.xlsx"
-                  onChange={(event) => importRecipients(event.target.files?.[0])}
+                  onChange={(event) => stageBulkRecipients(event.target.files?.[0])}
                 />
               </div>
               <div className="field">
@@ -913,6 +933,25 @@ export default function Home() {
                 {bulkFile.fileName} ({Math.ceil(bulkFile.size / 1024)} KB)
               </div>
             ) : null}
+            {bulkRecipientName ? (
+              <div className="fileChip">
+                <FileSpreadsheet size={16} />
+                {bulkRecipientName} staged
+              </div>
+            ) : null}
+            <div className="buttonRow">
+              <Button
+                onClick={loadBulkIntoQueue}
+                disabled={!bulkRecipientFile || busyAction === "import"}
+              >
+                {busyAction === "import" ? (
+                  <Loader2 className="spin" size={17} />
+                ) : (
+                  <Upload size={17} />
+                )}
+                Load Into Queue
+              </Button>
+            </div>
             <p className="hint">
               Recipient file columns: `Mobile Number` or `phone`, optional `text`, and optional
               `ImageURL`. Message templates can use placeholders like {"{Name}"} or{" "}
