@@ -173,6 +173,54 @@ https://YOUR_RENDER_APP.onrender.com
 
 External services such as cron-job.org or UptimeRobot are preferred for keep-alive pings because GitHub scheduled workflows may be delayed or paused.
 
+## Optional Dashboard
+
+This repo also includes a TypeScript Next.js dashboard in `dashboard/` for testing and sending through the bot API from a browser.
+
+```bash
+cd dashboard
+npm install
+npm run dev -- -p 3001
+```
+
+Open:
+
+```txt
+http://localhost:3001
+```
+
+The dashboard uses shadcn-style UI components and includes:
+
+- Health/status checks
+- QR page shortcut
+- Single message tab with optional image/document upload
+- Bulk message tab for `.csv` or `.xlsx` recipient import
+- Shared image/document upload for bulk sends
+- Persistent browser-side send queue using `localStorage`
+- Health-check before each queued send, so failed or disconnected runs can be resumed
+- Supabase Storage upload for attachments, using private bucket signed URLs
+
+Bulk recipient files should include:
+
+```txt
+phone,text
+6591234567,Hello from the dashboard
+6597654321,Another message
+```
+
+Without headers, column 1 is treated as `phone` and column 2 as `text`.
+
+For attachment uploads, set these dashboard server-side environment variables:
+
+```env
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
+SUPABASE_STORAGE_BUCKET=whatsapp-temp
+SUPABASE_SIGNED_URL_TTL_SECONDS=1800
+```
+
+The Supabase bucket should stay private. The dashboard uploads the file server-side, creates a signed URL, then sends that URL to the bot.
+
 ## Endpoints
 
 ```txt

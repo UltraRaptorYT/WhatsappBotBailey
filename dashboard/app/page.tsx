@@ -1,0 +1,934 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import ExcelJS from "exceljs";
+import {
+  Activity,
+  CheckCircle2,
+  Clock3,
+  FileSpreadsheet,
+  FileUp,
+  Image,
+  Loader2,
+  Pause,
+  Play,
+  RefreshCw,
+  Send,
+  Server,
+  Trash2,
+  Upload,
+  XCircle
+} from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+
+const defaultBotUrl =
+  process.env.NEXT_PUBLIC_DEFAULT_BOT_URL || "https://whatsappbotbailey.onrender.com";
+const queueStorageKey = "baileys-dashboard-queue-v1";
+const adminTokenStorageKey = "baileys-dashboard-admin-token";
+const attachmentDbName = "baileys-dashboard-attachments";
+const attachmentStoreName = "attachments";
+const memoryAttachments = new Map<string, StoredAttachment>();
+const maxUploadBytes = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB || 50) * 1024 * 1024;
+
+type UploadFile = {
+  attachmentId: string;
+  fileName: string;
+  mimetype: string;
+  size: number;
+};
+
+type StoredAttachment = UploadFile & {
+  dataUrl: string;
+};
+
+type QueueStatus = "queued" | "sending" | "sent" | "failed";
+
+type QueueItem = {
+  id: string;
+  phone: string;
+  text: string;
+  file?: UploadFile;
+  status: QueueStatus;
+  attempts: number;
+  lastError?: string;
+  createdAt: string;
+  sentAt?: string;
+};
+
+type ProxyResult = {
+  ok: boolean;
+  status?: number;
+  statusText?: string;
+  latencyMs?: number;
+  data?: unknown;
+  error?: string;
+};
+
+type UploadResult = {
+  ok: boolean;
+  url?: string;
+  fileName?: string;
+  mimetype?: string;
+  error?: string;
+};
+
+function joinUrl(baseUrl: string, path: string) {
+  return `${baseUrl.replace(/\/$/, "")}${path}`;
+}
+
+function uid() {
+  return crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function parseCsv(text: string) {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    const next = text[i + 1];
+
+    if (char === '"' && quoted && next === '"') {
+      cell += '"';
+      i += 1;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (char === "," && !quoted) {
+      row.push(cell);
+      cell = "";
+    } else if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && next === "\n") {
+        i += 1;
+      }
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else {
+      cell += char;
+    }
+  }
+
+  row.push(cell);
+  rows.push(row);
+  return rows.filter((items) => items.some((item) => item.trim()));
+}
+
+function rowsToQueueItems(rows: string[][], defaultText: string, file?: UploadFile) {
+  if (!rows.length) {
+    return [];
+  }
+
+  const headers = rows[0].map((header) => header.trim().toLowerCase());
+  const hasHeader = headers.includes("phone") || headers.includes("text") || headers.includes("message");
+  const dataRows = hasHeader ? rows.slice(1) : rows;
+  const phoneIndex = hasHeader ? Math.max(headers.indexOf("phone"), headers.indexOf("number")) : 0;
+  const textIndex = hasHeader
+    ? headers.findIndex((header) => ["text", "message", "caption"].includes(header))
+    : 1;
+
+  return dataRows
+    .map((row) => {
+      const phone = String(row[phoneIndex] || "").replace(/\D/g, "");
+      const rowText = textIndex >= 0 ? String(row[textIndex] || "").trim() : "";
+
+      if (!phone) {
+        return null;
+      }
+
+      return {
+        id: uid(),
+        phone,
+        text: rowText || defaultText,
+        file,
+        status: "queued" as QueueStatus,
+        attempts: 0,
+        createdAt: new Date().toISOString()
+      };
+    })
+    .filter(Boolean) as QueueItem[];
+}
+
+async function readUploadFile(file: File): Promise<UploadFile> {
+  if (file.size > maxUploadBytes) {
+    throw new Error(
+      `File is too large. Max upload is ${Math.floor(maxUploadBytes / 1024 / 1024)} MB.`
+    );
+  }
+
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error || new Error("Failed to read file"));
+    reader.readAsDataURL(file);
+  });
+
+  const attachment: StoredAttachment = {
+    attachmentId: uid(),
+    dataUrl,
+    fileName: file.name,
+    mimetype: file.type || "application/octet-stream",
+    size: file.size
+  };
+
+  await saveAttachment(attachment);
+
+  return {
+    attachmentId: attachment.attachmentId,
+    fileName: attachment.fileName,
+    mimetype: attachment.mimetype,
+    size: attachment.size
+  };
+}
+
+function openAttachmentDb() {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(attachmentDbName, 1);
+
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore(attachmentStoreName, { keyPath: "attachmentId" });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Failed to open attachment storage"));
+  });
+}
+
+async function saveAttachment(attachment: StoredAttachment) {
+  memoryAttachments.set(attachment.attachmentId, attachment);
+
+  try {
+    const db = await openAttachmentDb();
+
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(attachmentStoreName, "readwrite");
+      tx.objectStore(attachmentStoreName).put(attachment);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error("Failed to save attachment"));
+    });
+
+    db.close();
+  } catch (error) {
+    console.warn("Attachment saved in memory only:", error);
+  }
+}
+
+async function getAttachment(attachmentId: string) {
+  const memoryAttachment = memoryAttachments.get(attachmentId);
+
+  if (memoryAttachment) {
+    return memoryAttachment;
+  }
+
+  try {
+    const db = await openAttachmentDb();
+
+    const attachment = await new Promise<StoredAttachment | undefined>((resolve, reject) => {
+      const tx = db.transaction(attachmentStoreName, "readonly");
+      const request = tx.objectStore(attachmentStoreName).get(attachmentId);
+      request.onsuccess = () => resolve(request.result as StoredAttachment | undefined);
+      request.onerror = () => reject(request.error || new Error("Failed to read attachment"));
+    });
+
+    db.close();
+    return attachment;
+  } catch (error) {
+    console.warn("Could not read IndexedDB attachment:", error);
+    return undefined;
+  }
+}
+
+async function deleteAttachment(attachmentId: string) {
+  memoryAttachments.delete(attachmentId);
+
+  try {
+    const db = await openAttachmentDb();
+
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(attachmentStoreName, "readwrite");
+      tx.objectStore(attachmentStoreName).delete(attachmentId);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error("Failed to delete attachment"));
+    });
+
+    db.close();
+  } catch (error) {
+    console.warn("Could not delete IndexedDB attachment:", error);
+  }
+}
+
+async function readRecipientsFile(file: File, defaultText: string, attachment?: UploadFile) {
+  if (file.name.toLowerCase().endsWith(".csv")) {
+    const text = await file.text();
+    return rowsToQueueItems(parseCsv(text), defaultText, attachment);
+  }
+
+  const workbook = new ExcelJS.Workbook();
+  const buffer = await file.arrayBuffer();
+  await workbook.xlsx.load(buffer);
+  const sheet = workbook.worksheets[0];
+
+  if (!sheet) {
+    return [];
+  }
+
+  const rows: string[][] = [];
+  sheet.eachRow((row) => {
+    const values = Array.isArray(row.values) ? row.values : [];
+    rows.push(values.slice(1).map((value) => (value == null ? "" : String(value))));
+  });
+
+  return rowsToQueueItems(rows, defaultText, attachment);
+}
+
+function ResultPanel({ result }: { result: ProxyResult | null }) {
+  if (!result) {
+    return (
+      <div className="result empty">
+        <Activity size={18} />
+        <span>No request yet</span>
+      </div>
+    );
+  }
+
+  const Icon = result.ok ? CheckCircle2 : XCircle;
+
+  return (
+    <div className={`result ${result.ok ? "good" : "bad"}`}>
+      <div className="resultHeader">
+        <span>
+          <Icon size={18} />
+          {result.ok ? "Reachable" : "Failed"}
+        </span>
+        <span>
+          <Clock3 size={16} />
+          {result.latencyMs ?? "-"} ms
+        </span>
+      </div>
+      <pre>{JSON.stringify(result, null, 2)}</pre>
+    </div>
+  );
+}
+
+export default function Home() {
+  const [baseUrl, setBaseUrl] = useState(defaultBotUrl);
+  const [adminToken, setAdminToken] = useState("");
+  const [rememberToken, setRememberToken] = useState(false);
+  const [singlePhone, setSinglePhone] = useState("");
+  const [singleText, setSingleText] = useState("Hello from dashboard");
+  const [singleFile, setSingleFile] = useState<UploadFile | undefined>();
+  const [bulkText, setBulkText] = useState("Hello from dashboard");
+  const [bulkFile, setBulkFile] = useState<UploadFile | undefined>();
+  const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [running, setRunning] = useState(false);
+  const [busyAction, setBusyAction] = useState("");
+  const [result, setResult] = useState<ProxyResult | null>(null);
+  const runningRef = useRef(false);
+
+  const endpoints = useMemo(() => {
+    const token = encodeURIComponent(adminToken);
+
+    return {
+      health: joinUrl(baseUrl, "/health"),
+      status: joinUrl(baseUrl, `/status?token=${token}`),
+      qr: joinUrl(baseUrl, `/qr?token=${token}`),
+      send: joinUrl(baseUrl, `/send?token=${token}`)
+    };
+  }, [adminToken, baseUrl]);
+
+  const counts = useMemo(
+    () => ({
+      queued: queue.filter((item) => item.status === "queued").length,
+      sending: queue.filter((item) => item.status === "sending").length,
+      sent: queue.filter((item) => item.status === "sent").length,
+      failed: queue.filter((item) => item.status === "failed").length
+    }),
+    [queue]
+  );
+
+  useEffect(() => {
+    const storedToken = localStorage.getItem(adminTokenStorageKey);
+    const stored = localStorage.getItem(queueStorageKey);
+
+    if (storedToken) {
+      setAdminToken(storedToken);
+      setRememberToken(true);
+    }
+
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored) as QueueItem[];
+        const migrated = parsed.map((item) =>
+          item.file && "dataUrl" in item.file ? { ...item, file: undefined } : item
+        );
+        setQueue(migrated);
+      } catch (_error) {
+        localStorage.removeItem(queueStorageKey);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (rememberToken && adminToken) {
+      localStorage.setItem(adminTokenStorageKey, adminToken);
+    }
+
+    if (!rememberToken) {
+      localStorage.removeItem(adminTokenStorageKey);
+    }
+  }, [adminToken, rememberToken]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(queueStorageKey, JSON.stringify(queue));
+    } catch (error) {
+      setResult({
+        ok: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Could not persist queue metadata"
+      });
+    }
+  }, [queue]);
+
+  async function callApi(
+    action: string,
+    url: string,
+    method: "GET" | "POST" = "GET",
+    payload: Record<string, unknown> | null = null
+  ) {
+    setBusyAction(action);
+    setResult(null);
+
+    try {
+      const response = await fetch("/api/ping", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url, method, payload })
+      });
+      const data = (await response.json()) as ProxyResult;
+      setResult(data);
+      return data;
+    } catch (error) {
+      const data = {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+      setResult(data);
+      return data;
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function sendPayload(item: QueueItem) {
+    const payload: Record<string, unknown> = {
+      phone: item.phone,
+      text: item.text
+    };
+
+    if (item.file) {
+      const attachment = await getAttachment(item.file.attachmentId);
+
+      if (!attachment) {
+        return {
+          ok: false,
+          error: `Missing attachment: ${item.file.fileName}`
+        };
+      }
+
+      const uploaded = await uploadAttachment(attachment);
+
+      if (!uploaded.ok || !uploaded.url) {
+        return {
+          ok: false,
+          error: uploaded.error || `Failed to upload ${item.file.fileName}`
+        };
+      }
+
+      payload.url = uploaded.url;
+      payload.fileName = uploaded.fileName || attachment.fileName;
+      payload.mimetype = uploaded.mimetype || attachment.mimetype;
+    }
+
+    return callApi("queue", endpoints.send, "POST", payload);
+  }
+
+  async function uploadAttachment(attachment: StoredAttachment): Promise<UploadResult> {
+    const response = await fetch("/api/upload", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        dataUrl: attachment.dataUrl,
+        fileName: attachment.fileName,
+        mimetype: attachment.mimetype
+      })
+    });
+
+    return (await response.json()) as UploadResult;
+  }
+
+  async function processQueue() {
+    if (runningRef.current) {
+      return;
+    }
+
+    runningRef.current = true;
+    setRunning(true);
+
+    while (runningRef.current) {
+      const next = queueRef.current.find((item) => item.status === "queued" || item.status === "failed");
+
+      if (!next) {
+        break;
+      }
+
+      setQueue((items) =>
+        items.map((item) =>
+          item.id === next.id
+            ? { ...item, status: "sending", attempts: item.attempts + 1, lastError: undefined }
+            : item
+        )
+      );
+
+      const health = await callApi("health", endpoints.health);
+
+      if (!health.ok) {
+        setQueue((items) =>
+          items.map((item) =>
+            item.id === next.id
+              ? { ...item, status: "failed", lastError: "Health check failed" }
+              : item
+          )
+        );
+        break;
+      }
+
+      const sendResult = await sendPayload(next);
+
+      setQueue((items) =>
+        items.map((item) =>
+          item.id === next.id
+            ? sendResult.ok
+              ? { ...item, status: "sent", sentAt: new Date().toISOString(), lastError: undefined }
+              : { ...item, status: "failed", lastError: sendResult.error || "Send failed" }
+            : item
+        )
+      );
+
+      if (!sendResult.ok) {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+    }
+
+    runningRef.current = false;
+    setRunning(false);
+  }
+
+  const queueRef = useRef(queue);
+  useEffect(() => {
+    queueRef.current = queue;
+  }, [queue]);
+
+  async function handleSingleFile(file?: File) {
+    try {
+      setSingleFile(file ? await readUploadFile(file) : undefined);
+    } catch (error) {
+      setResult({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  async function handleBulkFile(file?: File) {
+    try {
+      setBulkFile(file ? await readUploadFile(file) : undefined);
+    } catch (error) {
+      setResult({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  async function importRecipients(file?: File) {
+    if (!file) {
+      return;
+    }
+
+    setBusyAction("import");
+    try {
+      const imported = await readRecipientsFile(file, bulkText, bulkFile);
+      setQueue((items) => [...items, ...imported]);
+      setResult({
+        ok: true,
+        data: {
+          imported: imported.length,
+          source: file.name
+        }
+      });
+    } catch (error) {
+      setResult({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  function enqueueSingle() {
+    const phone = singlePhone.replace(/\D/g, "");
+
+    if (!phone) {
+      setResult({ ok: false, error: "Phone is required" });
+      return;
+    }
+
+    setQueue((items) => [
+      ...items,
+      {
+        id: uid(),
+        phone,
+        text: singleText,
+        file: singleFile,
+        status: "queued",
+        attempts: 0,
+        createdAt: new Date().toISOString()
+      }
+    ]);
+  }
+
+  async function clearFinished() {
+    const sentAttachments = queue
+      .filter((item) => item.status === "sent" && item.file)
+      .map((item) => item.file!.attachmentId)
+      .filter(
+        (attachmentId) =>
+          !queue.some((item) => item.status !== "sent" && item.file?.attachmentId === attachmentId)
+      );
+
+    await Promise.all([...new Set(sentAttachments)].map(deleteAttachment));
+    setQueue((items) => items.filter((item) => item.status !== "sent"));
+  }
+
+  function retryFailed() {
+    setQueue((items) =>
+      items.map((item) => (item.status === "failed" ? { ...item, status: "queued" } : item))
+    );
+  }
+
+  async function removeQueueItem(id: string) {
+    const item = queue.find((entry) => entry.id === id);
+
+    if (
+      item?.file &&
+      !queue.some((entry) => entry.id !== id && entry.file?.attachmentId === item.file?.attachmentId)
+    ) {
+      await deleteAttachment(item.file.attachmentId);
+    }
+
+    setQueue((items) => items.filter((entry) => entry.id !== id));
+  }
+
+  async function removeQueueItemAttachment(id: string) {
+    const item = queue.find((entry) => entry.id === id);
+
+    if (
+      item?.file &&
+      !queue.some((entry) => entry.id !== id && entry.file?.attachmentId === item.file?.attachmentId)
+    ) {
+      await deleteAttachment(item.file.attachmentId);
+    }
+
+    setQueue((items) =>
+      items.map((entry) =>
+        entry.id === id
+          ? {
+              ...entry,
+              file: undefined,
+              status: entry.status === "failed" ? "queued" : entry.status,
+              lastError: undefined
+            }
+          : entry
+      )
+    );
+  }
+
+  async function clearQueue() {
+    const attachments = queue.filter((item) => item.file).map((item) => item.file!.attachmentId);
+
+    await Promise.all([...new Set(attachments)].map(deleteAttachment));
+    setQueue([]);
+    setRunning(false);
+    runningRef.current = false;
+  }
+
+  return (
+    <main className="shell">
+      <section className="topbar">
+        <div>
+          <p className="eyebrow">Baileys WhatsApp Bot</p>
+          <h1>API Dashboard</h1>
+        </div>
+        <div className="topActions">
+          <Button asChild variant="outline">
+            <a href={endpoints.qr} target="_blank" rel="noreferrer">
+              <FileUp size={17} />
+              QR Page
+            </a>
+          </Button>
+          <Button onClick={() => callApi("health", endpoints.health)} disabled={busyAction !== ""}>
+            {busyAction === "health" ? <Loader2 className="spin" size={17} /> : <Activity size={17} />}
+            Health
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => callApi("status", endpoints.status)}
+            disabled={busyAction !== "" || !adminToken}
+          >
+            {busyAction === "status" ? <Loader2 className="spin" size={17} /> : <RefreshCw size={17} />}
+            Status
+          </Button>
+        </div>
+      </section>
+
+      <section className="panel settings">
+        <div className="field">
+          <Label htmlFor="baseUrl">Bot base URL</Label>
+          <Input
+            id="baseUrl"
+            value={baseUrl}
+            onChange={(event) => setBaseUrl(event.target.value)}
+            placeholder="https://your-render-app.onrender.com"
+          />
+        </div>
+        <div className="field">
+          <Label htmlFor="adminToken">Admin token</Label>
+          <Input
+            id="adminToken"
+            value={adminToken}
+            onChange={(event) => setAdminToken(event.target.value)}
+            placeholder="Paste ADMIN_TOKEN"
+            type="password"
+          />
+          <label className="checkRow">
+            <input
+              checked={rememberToken}
+              onChange={(event) => setRememberToken(event.target.checked)}
+              type="checkbox"
+            />
+            <span>Remember token on this browser</span>
+          </label>
+        </div>
+      </section>
+
+      <Tabs defaultValue="single" className="tabsWrap">
+        <TabsList>
+          <TabsTrigger value="single">
+            <Send size={16} />
+            Single Message
+          </TabsTrigger>
+          <TabsTrigger value="bulk">
+            <FileSpreadsheet size={16} />
+            Bulk Message
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="single">
+          <section className="panel formPanel">
+            <div className="panelTitle">
+              <Send size={20} />
+              <h2>Single Message</h2>
+            </div>
+            <div className="formGrid">
+              <div className="field">
+                <Label htmlFor="singlePhone">Phone</Label>
+                <Input
+                  id="singlePhone"
+                  value={singlePhone}
+                  onChange={(event) => setSinglePhone(event.target.value)}
+                  placeholder="6591234567"
+                />
+              </div>
+              <div className="field">
+                <Label htmlFor="singleUpload">Image or document</Label>
+                <Input
+                  id="singleUpload"
+                  type="file"
+                  accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt"
+                  onChange={(event) => handleSingleFile(event.target.files?.[0])}
+                />
+              </div>
+            </div>
+            <div className="field">
+              <Label htmlFor="singleText">Text</Label>
+              <Textarea
+                id="singleText"
+                value={singleText}
+                onChange={(event) => setSingleText(event.target.value)}
+                rows={4}
+              />
+            </div>
+            {singleFile ? (
+              <div className="fileChip">
+                <Image size={16} />
+                {singleFile.fileName} ({Math.ceil(singleFile.size / 1024)} KB)
+              </div>
+            ) : null}
+            <div className="buttonRow">
+              <Button onClick={enqueueSingle} disabled={!singlePhone || (!singleText && !singleFile)}>
+                <Upload size={17} />
+                Add To Queue
+              </Button>
+              <Button onClick={processQueue} disabled={running || !adminToken || !queue.length}>
+                {running ? <Loader2 className="spin" size={17} /> : <Play size={17} />}
+                Start Queue
+              </Button>
+            </div>
+          </section>
+        </TabsContent>
+
+        <TabsContent value="bulk">
+          <section className="panel formPanel">
+            <div className="panelTitle">
+              <FileSpreadsheet size={20} />
+              <h2>Bulk Message</h2>
+            </div>
+            <div className="formGrid">
+              <div className="field">
+                <Label htmlFor="bulkRecipients">CSV or Excel recipients</Label>
+                <Input
+                  id="bulkRecipients"
+                  type="file"
+                  accept=".csv,.xlsx"
+                  onChange={(event) => importRecipients(event.target.files?.[0])}
+                />
+              </div>
+              <div className="field">
+                <Label htmlFor="bulkUpload">Shared image or document</Label>
+                <Input
+                  id="bulkUpload"
+                  type="file"
+                  accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt"
+                  onChange={(event) => handleBulkFile(event.target.files?.[0])}
+                />
+              </div>
+            </div>
+            <div className="field">
+              <Label htmlFor="bulkText">Default text</Label>
+              <Textarea
+                id="bulkText"
+                value={bulkText}
+                onChange={(event) => setBulkText(event.target.value)}
+                rows={4}
+              />
+            </div>
+            {bulkFile ? (
+              <div className="fileChip">
+                <FileUp size={16} />
+                {bulkFile.fileName} ({Math.ceil(bulkFile.size / 1024)} KB)
+              </div>
+            ) : null}
+            <p className="hint">
+              Recipient file columns: `phone` and optional `text`. Without headers, column 1 is phone
+              and column 2 is text.
+            </p>
+          </section>
+        </TabsContent>
+      </Tabs>
+
+      <section className="panel queuePanel">
+        <div className="queueHeader">
+          <div className="panelTitle">
+            <Server size={20} />
+            <h2>Durable Send Queue</h2>
+          </div>
+          <div className="queueActions">
+            <Button onClick={processQueue} disabled={running || !adminToken || !queue.length}>
+              {running ? <Loader2 className="spin" size={17} /> : <Play size={17} />}
+              Resume
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                runningRef.current = false;
+                setRunning(false);
+              }}
+              disabled={!running}
+            >
+              <Pause size={17} />
+              Pause
+            </Button>
+            <Button variant="outline" onClick={retryFailed} disabled={!counts.failed}>
+              <RefreshCw size={17} />
+              Retry Failed
+            </Button>
+            <Button variant="outline" onClick={clearFinished} disabled={!counts.sent}>
+              <Trash2 size={17} />
+              Clear Sent
+            </Button>
+            <Button variant="destructive" onClick={clearQueue} disabled={!queue.length}>
+              <Trash2 size={17} />
+              Clear All
+            </Button>
+          </div>
+        </div>
+        <div className="stats">
+          <span>Queued {counts.queued}</span>
+          <span>Sending {counts.sending}</span>
+          <span>Sent {counts.sent}</span>
+          <span>Failed {counts.failed}</span>
+        </div>
+        <div className="queueList">
+          {queue.slice(0, 80).map((item) => (
+            <div className={`queueItem ${item.status}`} key={item.id}>
+              <div>
+                <strong>{item.phone}</strong>
+                <span>{item.text || item.file?.fileName || "No text"}</span>
+              </div>
+              <div>
+                <span>{item.file ? item.file.fileName : "text"}</span>
+                <span>{item.status} · attempts {item.attempts}</span>
+                {item.lastError ? <span>{item.lastError}</span> : null}
+                <div className="itemActions">
+                  {item.file ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => removeQueueItemAttachment(item.id)}
+                    >
+                      Drop File
+                    </Button>
+                  ) : null}
+                  <Button size="sm" variant="outline" onClick={() => removeQueueItem(item.id)}>
+                    Remove
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ))}
+          {!queue.length ? <div className="emptyQueue">No messages queued</div> : null}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panelTitle">
+          <Activity size={20} />
+          <h2>Last Response</h2>
+        </div>
+        <ResultPanel result={result} />
+      </section>
+    </main>
+  );
+}

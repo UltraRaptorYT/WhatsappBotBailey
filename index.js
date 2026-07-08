@@ -20,6 +20,20 @@ let reconnectTimer = null;
 let lastBotError = null;
 let botStarting = false;
 
+process.on("unhandledRejection", (reason) => {
+  lastBotError = getErrorMessage(reason);
+  connectionStatus = "disconnected";
+  console.error("Unhandled promise rejection:", reason);
+  scheduleReconnect();
+});
+
+process.on("uncaughtException", (error) => {
+  lastBotError = getErrorMessage(error);
+  connectionStatus = "disconnected";
+  console.error("Uncaught exception:", error);
+  scheduleReconnect();
+});
+
 function getErrorMessage(error) {
   return error?.stack || error?.message || String(error);
 }
@@ -57,7 +71,7 @@ function cleanupSocket() {
   }
 }
 
-app.use(express.json());
+app.use(express.json({ limit: process.env.JSON_LIMIT || "100mb" }));
 
 function requireAdmin(req, res, next) {
   const header = req.get("authorization") || "";
@@ -110,6 +124,36 @@ function extensionToMimeType(fileName) {
   return mimeTypes[extension] || null;
 }
 
+function parseFileBody(body) {
+  const file = body.file || {};
+  const dataUrl = body.dataUrl || file.dataUrl;
+  const base64 = body.base64 || file.base64;
+  const fileName = body.fileName || file.fileName || file.name;
+  let mimetype = body.mimetype || file.mimetype || file.type || extensionToMimeType(fileName);
+  let rawBase64 = base64;
+
+  if (dataUrl) {
+    const match = String(dataUrl).match(/^data:([^;]+);base64,(.+)$/);
+
+    if (!match) {
+      return { error: "Invalid dataUrl" };
+    }
+
+    mimetype = mimetype || match[1];
+    rawBase64 = match[2];
+  }
+
+  if (!rawBase64) {
+    return null;
+  }
+
+  return {
+    buffer: Buffer.from(String(rawBase64), "base64"),
+    fileName: fileName || "upload",
+    mimetype: mimetype || "application/octet-stream"
+  };
+}
+
 async function getUrlMetadata(url) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
@@ -144,9 +188,22 @@ async function getUrlMetadata(url) {
 
 async function buildMessagePayload(body) {
   const captionText = body.text ?? body.caption;
+  const uploadedFile = parseFileBody(body);
+
+  if (uploadedFile?.error) {
+    return { error: uploadedFile.error };
+  }
+
   const metadata = body.url ? await getUrlMetadata(String(body.url)) : {};
-  const inferredMimeType = body.mimetype || metadata.mimetype || extensionToMimeType(metadata.fileName);
-  const type = body.type || (body.url && inferredMimeType?.startsWith("image/") ? "image" : body.url ? "document" : "text");
+  const inferredMimeType =
+    uploadedFile?.mimetype ||
+    body.mimetype ||
+    metadata.mimetype ||
+    extensionToMimeType(metadata.fileName);
+  const type =
+    body.type ||
+    (inferredMimeType?.startsWith("image/") && (body.url || uploadedFile) ? "image" : null) ||
+    (body.url || uploadedFile ? "document" : "text");
 
   if (type === "text" || (!type && body.text)) {
     if (!body.text) {
@@ -161,13 +218,14 @@ async function buildMessagePayload(body) {
   }
 
   if (type === "image") {
-    if (!body.url) {
-      return { error: "Missing image url" };
+    if (!body.url && !uploadedFile) {
+      return { error: "Missing image url or file" };
     }
 
     return {
       message: {
-        image: { url: String(body.url) },
+        image: uploadedFile ? uploadedFile.buffer : { url: String(body.url) },
+        mimetype: inferredMimeType || undefined,
         caption: captionText ? String(captionText) : undefined
       },
       messageType: "image",
@@ -176,16 +234,16 @@ async function buildMessagePayload(body) {
   }
 
   if (type === "document") {
-    if (!body.url) {
-      return { error: "Missing document url" };
+    if (!body.url && !uploadedFile) {
+      return { error: "Missing document url or file" };
     }
 
-    const fileName = body.fileName || metadata.fileName || "document";
+    const fileName = uploadedFile?.fileName || body.fileName || metadata.fileName || "document";
     const mimetype = inferredMimeType || "application/octet-stream";
 
     return {
       message: {
-        document: { url: String(body.url) },
+        document: uploadedFile ? uploadedFile.buffer : { url: String(body.url) },
         fileName: String(fileName),
         mimetype: String(mimetype),
         caption: captionText ? String(captionText) : undefined
