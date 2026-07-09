@@ -387,6 +387,23 @@ function ResultPanel({ result }: { result: ProxyResult | null }) {
   );
 }
 
+function getSendErrorMessage(result: ProxyResult) {
+  const nestedError =
+    result.data && typeof result.data === "object" && "error" in result.data
+      ? String((result.data as { error?: unknown }).error || "")
+      : "";
+  const error = nestedError || result.error || "Send failed";
+
+  if (
+    error.toLowerCase().includes("not on whatsapp") ||
+    error.toLowerCase().includes("invalid phone")
+  ) {
+    return "Send failed - Phone Number is wrong";
+  }
+
+  return error === "Send failed" ? "Send failed" : `Send failed - ${error}`;
+}
+
 export default function Home() {
   const [baseUrl, setBaseUrl] = useState(defaultBotUrl);
   const [adminToken, setAdminToken] = useState("");
@@ -593,7 +610,7 @@ export default function Home() {
           item.id === next.id
             ? sendResult.ok
               ? { ...item, status: "sent", sentAt: new Date().toISOString(), lastError: undefined }
-              : { ...item, status: "failed", lastError: sendResult.error || "Send failed" }
+              : { ...item, status: "failed", lastError: getSendErrorMessage(sendResult) }
             : item
         )
       );
