@@ -28,7 +28,6 @@ import { Textarea } from "@/components/ui/textarea";
 
 const defaultBotUrl =
   process.env.NEXT_PUBLIC_DEFAULT_BOT_URL || "https://whatsappbotbailey.onrender.com";
-const queueStorageKey = "baileys-dashboard-queue-v1";
 const adminTokenStorageKey = "baileys-dashboard-admin-token";
 const attachmentDbName = "baileys-dashboard-attachments";
 const attachmentStoreName = "attachments";
@@ -63,6 +62,12 @@ type QueueItem = {
   sentAt?: string;
 };
 
+type QueueSettings = {
+  batchSize: number;
+  batchWaitMs: number;
+  messageDelayMs: number;
+};
+
 type ProxyResult = {
   ok: boolean;
   status?: number;
@@ -75,6 +80,10 @@ type ProxyResult = {
 type ServerQueueItem = {
   id: string;
   clientId?: string;
+  phone: string;
+  text: string;
+  fileName?: string;
+  hasAttachment?: boolean;
   status: QueueStatus;
   attempts: number;
   lastError?: string;
@@ -85,6 +94,7 @@ type ServerQueueResponse = {
   ok: boolean;
   running: boolean;
   paused: boolean;
+  settings: QueueSettings;
   items: ServerQueueItem[];
   added?: ServerQueueItem[];
 };
@@ -446,6 +456,11 @@ export default function Home() {
   const [bulkRecipientName, setBulkRecipientName] = useState("");
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [queueFilter, setQueueFilter] = useState<QueueFilter>("all");
+  const [queueSettings, setQueueSettings] = useState<QueueSettings>({
+    batchSize: 5,
+    batchWaitMs: 5 * 60 * 1000,
+    messageDelayMs: 1200
+  });
   const [running, setRunning] = useState(false);
   const [busyAction, setBusyAction] = useState("");
   const [result, setResult] = useState<ProxyResult | null>(null);
@@ -463,7 +478,8 @@ export default function Home() {
       queueStart: joinUrl(baseUrl, `/queue/start?token=${token}`),
       queuePause: joinUrl(baseUrl, `/queue/pause?token=${token}`),
       queueRequeue: joinUrl(baseUrl, `/queue/requeue?token=${token}`),
-      queueClear: joinUrl(baseUrl, `/queue/clear?token=${token}`)
+      queueClear: joinUrl(baseUrl, `/queue/clear?token=${token}`),
+      queueSettings: joinUrl(baseUrl, `/queue/settings?token=${token}`)
     };
   }, [adminToken, baseUrl]);
 
@@ -493,24 +509,12 @@ export default function Home() {
 
   useEffect(() => {
     const storedToken = localStorage.getItem(adminTokenStorageKey);
-    const stored = localStorage.getItem(queueStorageKey);
 
     if (storedToken) {
       setAdminToken(storedToken);
       setRememberToken(true);
     }
 
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored) as QueueItem[];
-        const migrated = parsed.map((item) =>
-          item.file && "dataUrl" in item.file ? { ...item, file: undefined } : item
-        );
-        setQueue(migrated);
-      } catch (_error) {
-        localStorage.removeItem(queueStorageKey);
-      }
-    }
   }, []);
 
   useEffect(() => {
@@ -522,20 +526,6 @@ export default function Home() {
       localStorage.removeItem(adminTokenStorageKey);
     }
   }, [adminToken, rememberToken]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(queueStorageKey, JSON.stringify(queue));
-    } catch (error) {
-      setResult({
-        ok: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Could not persist queue metadata"
-      });
-    }
-  }, [queue]);
 
   async function callApi(
     action: string,
@@ -573,26 +563,17 @@ export default function Home() {
   }
 
   function syncServerQueue(serverItems: ServerQueueItem[]) {
-    setQueue((items) =>
-      items.map((item) => {
-        const serverItem = serverItems.find(
-          (entry) => entry.id === item.serverId || entry.clientId === item.id
-        );
-
-        if (!serverItem) {
-          return item;
-        }
-
-        return {
-          ...item,
-          serverId: serverItem.id,
-          status: serverItem.status,
-          attempts: serverItem.attempts,
-          lastError: serverItem.lastError,
-          sentAt: serverItem.sentAt
-        };
-      })
-    );
+    setQueue(serverItems.map((item) => ({
+      id: item.clientId || item.id,
+      serverId: item.id,
+      phone: item.phone,
+      text: item.text,
+      status: item.status,
+      attempts: item.attempts,
+      lastError: item.lastError,
+      sentAt: item.sentAt,
+      createdAt: ""
+    })));
   }
 
   async function buildServerQueuePayload(item: QueueItem) {
@@ -609,9 +590,13 @@ export default function Home() {
         throw new Error(`Missing attachment: ${item.file.fileName}`);
       }
 
-      payload.dataUrl = attachment.dataUrl;
-      payload.fileName = attachment.fileName;
-      payload.mimetype = attachment.mimetype;
+      const uploaded = await uploadAttachment(attachment);
+      if (!uploaded.ok || !uploaded.url) {
+        throw new Error(uploaded.error || `Failed to upload ${attachment.fileName}`);
+      }
+      payload.url = uploaded.url;
+      payload.fileName = uploaded.fileName || attachment.fileName;
+      payload.mimetype = uploaded.mimetype || attachment.mimetype;
     } else if (item.url) {
       payload.url = item.url;
     }
@@ -751,12 +736,24 @@ export default function Home() {
     }
   }
 
+  async function addItemsToServer(items: QueueItem[]) {
+    const payloads = await Promise.all(items.map(buildServerQueuePayload));
+    const response = await callApi("queue", endpoints.queue, "POST", { items: payloads });
+    const data = getServerQueueData(response);
+    if (!response.ok || !data) {
+      throw new Error(getSendErrorMessage(response));
+    }
+    syncServerQueue(data.items);
+    setQueueSettings(data.settings);
+  }
+
   async function refreshServerQueue() {
     const result = await callApi("queue-status", endpoints.queue);
     const data = getServerQueueData(result);
 
     if (data) {
       syncServerQueue(data.items);
+      setQueueSettings(data.settings);
     }
 
     return data;
@@ -832,6 +829,8 @@ export default function Home() {
     }
 
     refreshServerQueue().catch(() => undefined);
+    const interval = window.setInterval(() => refreshServerQueue().catch(() => undefined), 5000);
+    return () => window.clearInterval(interval);
   }, [adminToken, baseUrl]);
 
   async function handleSingleFile(file?: File) {
@@ -867,7 +866,7 @@ export default function Home() {
     setBusyAction("import");
     try {
       const imported = await readRecipientsFile(file, bulkText, bulkFile);
-      setQueue((items) => [...items, ...imported]);
+      await addItemsToServer(imported);
       setResult({
         ok: true,
         data: {
@@ -900,7 +899,7 @@ export default function Home() {
     }
   }
 
-  function enqueueSingle() {
+  async function enqueueSingle() {
     const phone = singlePhone.replace(/\D/g, "");
 
     if (!phone) {
@@ -908,9 +907,9 @@ export default function Home() {
       return;
     }
 
-    setQueue((items) => [
-      ...items,
-      {
+    try {
+      await addItemsToServer([
+        {
         id: uid(),
         phone,
         text: singleText,
@@ -918,8 +917,20 @@ export default function Home() {
         status: "queued",
         attempts: 0,
         createdAt: new Date().toISOString()
-      }
-    ]);
+        }
+      ]);
+    } catch (error) {
+      setResult({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  async function saveQueueSettings() {
+    const response = await callApi("queue-settings", endpoints.queueSettings, "POST", queueSettings);
+    const data = getServerQueueData(response);
+    if (data) {
+      setQueueSettings(data.settings);
+      syncServerQueue(data.items);
+    }
   }
 
   async function clearFinished() {
@@ -1263,6 +1274,48 @@ export default function Home() {
             <Button variant="destructive" onClick={clearQueue} disabled={!queue.length}>
               <Trash2 size={17} />
               Clear All
+            </Button>
+          </div>
+        </div>
+        <div className="formGrid queueRateControls">
+          <div className="field">
+            <Label htmlFor="batchSize">Messages per batch</Label>
+            <Input
+              id="batchSize"
+              type="number"
+              min="1"
+              max="1000"
+              value={queueSettings.batchSize}
+              onChange={(event) => setQueueSettings((settings) => ({ ...settings, batchSize: Number(event.target.value) || 1 }))}
+            />
+          </div>
+          <div className="field">
+            <Label htmlFor="batchWait">Wait between batches (minutes)</Label>
+            <Input
+              id="batchWait"
+              type="number"
+              min="0"
+              max="1440"
+              value={queueSettings.batchWaitMs / 60000}
+              onChange={(event) => setQueueSettings((settings) => ({ ...settings, batchWaitMs: Math.max(0, Number(event.target.value) || 0) * 60000 }))}
+            />
+          </div>
+          <div className="field">
+            <Label htmlFor="messageDelay">Delay between messages (seconds)</Label>
+            <Input
+              id="messageDelay"
+              type="number"
+              min="0"
+              max="60"
+              step="0.1"
+              value={queueSettings.messageDelayMs / 1000}
+              onChange={(event) => setQueueSettings((settings) => ({ ...settings, messageDelayMs: Math.max(0, Number(event.target.value) || 0) * 1000 }))}
+            />
+          </div>
+          <div className="field rateSave">
+            <Label>&nbsp;</Label>
+            <Button variant="secondary" onClick={saveQueueSettings} disabled={!adminToken || busyAction === "queue-settings"}>
+              Save rate controls
             </Button>
           </div>
         </div>

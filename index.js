@@ -7,6 +7,7 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 import P from "pino";
 import QRCode from "qrcode";
+import { createClient } from "@supabase/supabase-js";
 import { useSupabaseAuthState } from "./supabase-auth.js";
 
 const app = express();
@@ -22,6 +23,12 @@ let botStarting = false;
 let sendQueue = [];
 let queueRunning = false;
 let queuePaused = false;
+let queueSettings = {
+  batchSize: Number(process.env.QUEUE_BATCH_SIZE || 5),
+  batchWaitMs: Number(process.env.QUEUE_BATCH_WAIT_MS || 5 * 60 * 1000),
+  messageDelayMs: Number(process.env.QUEUE_SEND_DELAY_MS || 1200)
+};
+let queueStore;
 
 process.on("unhandledRejection", (reason) => {
   lastBotError = getErrorMessage(reason);
@@ -47,6 +54,62 @@ function uid() {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitWhileQueueActive(ms) {
+  let remaining = ms;
+  while (!queuePaused && remaining > 0) {
+    const step = Math.min(remaining, 1000);
+    await delay(step);
+    remaining -= step;
+  }
+}
+
+function normalizeQueueSettings(input = {}) {
+  const number = (value, fallback, min, max) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.min(max, Math.max(min, Math.round(parsed))) : fallback;
+  };
+
+  return {
+    batchSize: number(input.batchSize, queueSettings.batchSize, 1, 1000),
+    batchWaitMs: number(input.batchWaitMs, queueSettings.batchWaitMs, 0, 24 * 60 * 60 * 1000),
+    messageDelayMs: number(input.messageDelayMs, queueSettings.messageDelayMs, 0, 60 * 1000)
+  };
+}
+
+async function loadQueueStore() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
+
+  queueStore = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  const { data, error } = await queueStore
+    .from("baileys_queue")
+    .select("value")
+    .eq("session_id", process.env.SESSION_ID || "main")
+    .maybeSingle();
+
+  if (error) throw new Error(`Could not load durable queue: ${error.message}`);
+  if (data?.value && typeof data.value === "object") {
+    sendQueue = Array.isArray(data.value.items) ? data.value.items : [];
+    queuePaused = Boolean(data.value.paused);
+    queueSettings = normalizeQueueSettings(data.value.settings || {});
+    // A process cannot resume an in-flight request after a restart.
+    sendQueue = sendQueue.map((item) => item.status === "sending" ? { ...item, status: "queued" } : item);
+    await saveQueueStore();
+  }
+}
+
+async function saveQueueStore() {
+  const { error } = await queueStore
+    .from("baileys_queue")
+    .upsert({
+      session_id: process.env.SESSION_ID || "main",
+      value: { items: sendQueue, paused: queuePaused, settings: queueSettings },
+      updated_at: new Date().toISOString()
+    }, { onConflict: "session_id" });
+  if (error) throw new Error(`Could not save durable queue: ${error.message}`);
 }
 
 function getQueueCounts() {
@@ -98,6 +161,7 @@ function getQueueSnapshot() {
     ok: true,
     running: queueRunning,
     paused: queuePaused,
+    settings: queueSettings,
     counts: getQueueCounts(),
     items: sendQueue.map(publicQueueItem)
   };
@@ -510,6 +574,7 @@ async function processSendQueue() {
   queuePaused = false;
 
   try {
+    let sentInBatch = 0;
     while (!queuePaused) {
       const next = sendQueue.find((item) => item.status === "queued");
 
@@ -521,6 +586,7 @@ async function processSendQueue() {
       next.attempts += 1;
       next.lastError = undefined;
       next.updatedAt = new Date().toISOString();
+      await saveQueueStore();
 
       const result = await sendMessageBody(next.payload);
 
@@ -541,10 +607,19 @@ async function processSendQueue() {
         });
       }
 
-      await delay(Number(process.env.QUEUE_SEND_DELAY_MS || 1200));
+      await saveQueueStore();
+      if (result.body.ok) sentInBatch += 1;
+
+      if (sentInBatch >= queueSettings.batchSize && sendQueue.some((item) => item.status === "queued")) {
+        sentInBatch = 0;
+        await waitWhileQueueActive(queueSettings.batchWaitMs);
+      } else {
+        await waitWhileQueueActive(queueSettings.messageDelayMs);
+      }
     }
   } finally {
     queueRunning = false;
+    await saveQueueStore();
   }
 }
 
@@ -552,11 +627,12 @@ app.get("/queue", requireAdmin, (_req, res) => {
   res.json(getQueueSnapshot());
 });
 
-app.post("/queue", requireAdmin, (req, res) => {
+app.post("/queue", requireAdmin, async (req, res, next) => {
   const rawItems = Array.isArray(req.body?.items) ? req.body.items : [req.body || {}];
   const items = rawItems.map(buildQueuedItem);
 
   sendQueue.push(...items);
+  try { await saveQueueStore(); } catch (error) { return next(error); }
 
   res.json({
     ...getQueueSnapshot(),
@@ -564,8 +640,9 @@ app.post("/queue", requireAdmin, (req, res) => {
   });
 });
 
-app.post("/queue/start", requireAdmin, (_req, res) => {
+app.post("/queue/start", requireAdmin, async (_req, res, next) => {
   queuePaused = false;
+  try { await saveQueueStore(); } catch (error) { return next(error); }
   processSendQueue().catch((error) => {
     lastBotError = getErrorMessage(error);
     queueRunning = false;
@@ -575,12 +652,19 @@ app.post("/queue/start", requireAdmin, (_req, res) => {
   res.json(getQueueSnapshot());
 });
 
-app.post("/queue/pause", requireAdmin, (_req, res) => {
+app.post("/queue/pause", requireAdmin, async (_req, res, next) => {
   queuePaused = true;
+  try { await saveQueueStore(); } catch (error) { return next(error); }
   res.json(getQueueSnapshot());
 });
 
-app.post("/queue/requeue", requireAdmin, (req, res) => {
+app.post("/queue/settings", requireAdmin, async (req, res, next) => {
+  queueSettings = normalizeQueueSettings(req.body || {});
+  try { await saveQueueStore(); } catch (error) { return next(error); }
+  res.json(getQueueSnapshot());
+});
+
+app.post("/queue/requeue", requireAdmin, async (req, res, next) => {
   const id = req.body?.id ? String(req.body.id) : "";
 
   if (id) {
@@ -603,10 +687,11 @@ app.post("/queue/requeue", requireAdmin, (req, res) => {
     );
   }
 
+  try { await saveQueueStore(); } catch (error) { return next(error); }
   res.json(getQueueSnapshot());
 });
 
-app.post("/queue/clear", requireAdmin, (req, res) => {
+app.post("/queue/clear", requireAdmin, async (req, res, next) => {
   const status = req.body?.status ? String(req.body.status) : "";
   const removableStatuses = new Set(["sent", "failed"]);
 
@@ -616,6 +701,7 @@ app.post("/queue/clear", requireAdmin, (req, res) => {
     sendQueue = sendQueue.filter((item) => item.status !== status);
   }
 
+  try { await saveQueueStore(); } catch (error) { return next(error); }
   res.json(getQueueSnapshot());
 });
 
@@ -660,6 +746,9 @@ async function startBot() {
       connectionStatus = "connected";
       lastBotError = null;
       console.log("WhatsApp connected");
+      if (!queuePaused && sendQueue.some((item) => item.status === "queued")) {
+        processSendQueue().catch((error) => console.error("Queue resume failure:", error));
+      }
     }
 
     if (connection === "close") {
@@ -711,14 +800,22 @@ async function startBot() {
   });
 }
 
-app.listen(port, () => {
-  console.log(`Server started on port ${port}`);
-});
+async function boot() {
+  await loadQueueStore();
+  app.listen(port, () => {
+    console.log(`Server started on port ${port}`);
+  });
 
-startBot().catch((error) => {
-  botStarting = false;
-  connectionStatus = "disconnected";
-  lastBotError = getErrorMessage(error);
-  console.error("Failed to start WhatsApp bot:", error);
-  scheduleReconnect();
+  startBot().catch((error) => {
+    botStarting = false;
+    connectionStatus = "disconnected";
+    lastBotError = getErrorMessage(error);
+    console.error("Failed to start WhatsApp bot:", error);
+    scheduleReconnect();
+  });
+}
+
+boot().catch((error) => {
+  console.error("Failed to boot service:", error);
+  process.exit(1);
 });

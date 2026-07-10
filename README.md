@@ -26,6 +26,12 @@ create table if not exists baileys_auth (
   updated_at timestamptz default now(),
   primary key (session_id, key)
 );
+
+create table if not exists baileys_queue (
+  session_id text primary key,
+  value jsonb not null default '{"items":[],"paused":false,"settings":{}}'::jsonb,
+  updated_at timestamptz default now()
+);
 ```
 
 This table stores `creds`, `pre-key-*`, `session-*`, `sender-key-*`, `app-state-sync-key-*`, `app-state-sync-version-*`, `sender-key-memory-*`, and any other auth keys requested by Baileys.
@@ -196,7 +202,9 @@ The dashboard uses shadcn-style UI components and includes:
 - Single message tab with optional image/document upload
 - Bulk message tab for staging and loading `.csv` or `.xlsx` recipients into the queue
 - Shared image/document upload for bulk sends
-- Persistent browser-side send queue using `localStorage`
+- Shared Supabase-backed send queue (all dashboards for the same WhatsApp session see the same data)
+- Custom batch pacing: messages per batch, wait between batches, and per-message delay
+- Queue worker runs on the bot server, so closing the dashboard does not interrupt a send
 - Health-check before each queued send, so failed or disconnected runs can be resumed
 - Supabase Storage upload for attachments, using private bucket signed URLs
 
@@ -233,6 +241,9 @@ GET  /health    Public JSON health response
 GET  /status    Admin-protected status JSON
 GET  /qr        Admin-protected QR page
 POST /send      Admin-protected send-message API
+GET  /queue     Read the shared durable queue
+POST /queue     Add messages to the shared queue
+POST /queue/start, /queue/pause, /queue/settings
 ```
 
 Admin endpoints accept either:
