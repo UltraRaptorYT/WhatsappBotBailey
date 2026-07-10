@@ -295,6 +295,11 @@ h2 {
   padding: 6px 10px;
 }
 
+.queueTabs {
+  width: fit-content;
+  max-width: 100%;
+}
+
 .queueList {
   display: grid;
   gap: 8px;
@@ -441,6 +446,11 @@ pre {
 
   .ui-tabs-list {
     width: 100%;
+  }
+
+  .queueTabs {
+    width: 100%;
+    overflow-x: auto;
   }
 
   .ui-tabs-trigger {

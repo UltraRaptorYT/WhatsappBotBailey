@@ -19,6 +19,9 @@ let connectionStatus = "starting";
 let reconnectTimer = null;
 let lastBotError = null;
 let botStarting = false;
+let sendQueue = [];
+let queueRunning = false;
+let queuePaused = false;
 
 process.on("unhandledRejection", (reason) => {
   lastBotError = getErrorMessage(reason);
@@ -36,6 +39,68 @@ process.on("uncaughtException", (error) => {
 
 function getErrorMessage(error) {
   return error?.stack || error?.message || String(error);
+}
+
+function uid() {
+  return crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getQueueCounts() {
+  return sendQueue.reduce(
+    (counts, item) => {
+      counts.all += 1;
+      counts[item.status] = (counts[item.status] || 0) + 1;
+      return counts;
+    },
+    { all: 0, queued: 0, sending: 0, sent: 0, failed: 0 }
+  );
+}
+
+function moveQueueItemToEnd(id, patch) {
+  const item = sendQueue.find((entry) => entry.id === id);
+
+  if (!item) {
+    return null;
+  }
+
+  sendQueue = [
+    ...sendQueue.filter((entry) => entry.id !== id),
+    { ...item, ...patch, updatedAt: new Date().toISOString() }
+  ];
+
+  return sendQueue[sendQueue.length - 1];
+}
+
+function publicQueueItem(item) {
+  return {
+    id: item.id,
+    clientId: item.clientId,
+    phone: item.phone,
+    jid: item.jid,
+    text: item.text,
+    status: item.status,
+    attempts: item.attempts,
+    lastError: item.lastError,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    sentAt: item.sentAt,
+    fileName: item.fileName,
+    hasAttachment: Boolean(item.payload?.url || item.payload?.dataUrl || item.payload?.base64)
+  };
+}
+
+function getQueueSnapshot() {
+  return {
+    ok: true,
+    running: queueRunning,
+    paused: queuePaused,
+    counts: getQueueCounts(),
+    items: sendQueue.map(publicQueueItem)
+  };
 }
 
 function scheduleReconnect() {
@@ -362,43 +427,196 @@ app.get("/qr", requireAdmin, (_req, res) => {
 </html>`);
 });
 
-app.post("/send", requireAdmin, async (req, res) => {
-  const { phone, jid } = req.body || {};
+async function sendMessageBody(body) {
+  const { phone, jid } = body || {};
   const to = jid || cleanPhoneToJid(phone);
-  const payload = await buildMessagePayload(req.body || {});
+  const payload = await buildMessagePayload(body || {});
 
   if (!to) {
-    return res.status(400).json({ ok: false, error: "Missing jid or phone" });
+    return { status: 400, body: { ok: false, error: "Missing jid or phone" } };
   }
 
   if (payload.error) {
-    return res.status(400).json({ ok: false, error: payload.error });
+    return { status: 400, body: { ok: false, error: payload.error } };
   }
 
   if (!sock || connectionStatus !== "connected") {
-    return res.status(500).json({ ok: false, error: "WhatsApp is not connected" });
+    return { status: 500, body: { ok: false, error: "WhatsApp is not connected" } };
   }
 
   try {
     const validation = await validateWhatsAppUser(to);
 
     if (!validation.ok) {
-      return res.status(400).json({ ok: false, to, error: validation.error });
+      return { status: 400, body: { ok: false, to, error: validation.error } };
     }
 
     const validatedTo = validation.jid || to;
     await sock.sendMessage(validatedTo, payload.message);
     console.log(`Send message success: ${validatedTo}`);
-    res.json({
-      ok: true,
-      to: validatedTo,
-      type: payload.messageType,
-      text: payload.responseText
-    });
+
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        to: validatedTo,
+        type: payload.messageType,
+        text: payload.responseText
+      }
+    };
   } catch (error) {
     console.error(`Send message failure: ${to}`, error);
-    res.status(500).json({ ok: false, error: "Failed to send message" });
+    return { status: 500, body: { ok: false, error: "Failed to send message" } };
   }
+}
+
+app.post("/send", requireAdmin, async (req, res) => {
+  const result = await sendMessageBody(req.body || {});
+  res.status(result.status).json(result.body);
+});
+
+function buildQueuedItem(rawItem) {
+  const payload = { ...(rawItem.payload || rawItem) };
+  const clientId = rawItem.clientId ? String(rawItem.clientId) : undefined;
+  const phone = payload.phone ? String(payload.phone).replace(/\D/g, "") : "";
+  const jid = payload.jid ? String(payload.jid) : "";
+
+  delete payload.clientId;
+  delete payload.payload;
+
+  return {
+    id: uid(),
+    clientId,
+    phone,
+    jid,
+    text: payload.text ? String(payload.text) : "",
+    fileName: payload.fileName ? String(payload.fileName) : undefined,
+    payload,
+    status: "queued",
+    attempts: 0,
+    lastError: undefined,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    sentAt: undefined
+  };
+}
+
+async function processSendQueue() {
+  if (queueRunning) {
+    return;
+  }
+
+  queueRunning = true;
+  queuePaused = false;
+
+  try {
+    while (!queuePaused) {
+      const next = sendQueue.find((item) => item.status === "queued");
+
+      if (!next) {
+        break;
+      }
+
+      next.status = "sending";
+      next.attempts += 1;
+      next.lastError = undefined;
+      next.updatedAt = new Date().toISOString();
+
+      const result = await sendMessageBody(next.payload);
+
+      if (result.body.ok) {
+        next.status = "sent";
+        next.sentAt = new Date().toISOString();
+        next.updatedAt = next.sentAt;
+        next.lastError = undefined;
+      } else if (result.body.error === "WhatsApp is not connected") {
+        next.status = "queued";
+        next.lastError = result.body.error;
+        next.updatedAt = new Date().toISOString();
+        break;
+      } else {
+        moveQueueItemToEnd(next.id, {
+          status: "failed",
+          lastError: result.body.error || "Send failed"
+        });
+      }
+
+      await delay(Number(process.env.QUEUE_SEND_DELAY_MS || 1200));
+    }
+  } finally {
+    queueRunning = false;
+  }
+}
+
+app.get("/queue", requireAdmin, (_req, res) => {
+  res.json(getQueueSnapshot());
+});
+
+app.post("/queue", requireAdmin, (req, res) => {
+  const rawItems = Array.isArray(req.body?.items) ? req.body.items : [req.body || {}];
+  const items = rawItems.map(buildQueuedItem);
+
+  sendQueue.push(...items);
+
+  res.json({
+    ...getQueueSnapshot(),
+    added: items.map(publicQueueItem)
+  });
+});
+
+app.post("/queue/start", requireAdmin, (_req, res) => {
+  queuePaused = false;
+  processSendQueue().catch((error) => {
+    lastBotError = getErrorMessage(error);
+    queueRunning = false;
+    console.error("Queue worker failure:", error);
+  });
+
+  res.json(getQueueSnapshot());
+});
+
+app.post("/queue/pause", requireAdmin, (_req, res) => {
+  queuePaused = true;
+  res.json(getQueueSnapshot());
+});
+
+app.post("/queue/requeue", requireAdmin, (req, res) => {
+  const id = req.body?.id ? String(req.body.id) : "";
+
+  if (id) {
+    moveQueueItemToEnd(id, {
+      status: "queued",
+      lastError: undefined,
+      sentAt: undefined
+    });
+  } else {
+    sendQueue = sendQueue.map((item) =>
+      item.status === "failed"
+        ? {
+            ...item,
+            status: "queued",
+            lastError: undefined,
+            sentAt: undefined,
+            updatedAt: new Date().toISOString()
+          }
+        : item
+    );
+  }
+
+  res.json(getQueueSnapshot());
+});
+
+app.post("/queue/clear", requireAdmin, (req, res) => {
+  const status = req.body?.status ? String(req.body.status) : "";
+  const removableStatuses = new Set(["sent", "failed"]);
+
+  if (req.body?.all) {
+    sendQueue = sendQueue.filter((item) => item.status === "sending");
+  } else if (status && removableStatuses.has(status)) {
+    sendQueue = sendQueue.filter((item) => item.status !== status);
+  }
+
+  res.json(getQueueSnapshot());
 });
 
 async function startBot() {

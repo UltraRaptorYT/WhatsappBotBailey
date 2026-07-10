@@ -47,9 +47,11 @@ type StoredAttachment = UploadFile & {
 };
 
 type QueueStatus = "queued" | "sending" | "sent" | "failed";
+type QueueFilter = "all" | QueueStatus;
 
 type QueueItem = {
   id: string;
+  serverId?: string;
   phone: string;
   text: string;
   file?: UploadFile;
@@ -70,6 +72,23 @@ type ProxyResult = {
   error?: string;
 };
 
+type ServerQueueItem = {
+  id: string;
+  clientId?: string;
+  status: QueueStatus;
+  attempts: number;
+  lastError?: string;
+  sentAt?: string;
+};
+
+type ServerQueueResponse = {
+  ok: boolean;
+  running: boolean;
+  paused: boolean;
+  items: ServerQueueItem[];
+  added?: ServerQueueItem[];
+};
+
 type UploadResult = {
   ok: boolean;
   url?: string;
@@ -77,6 +96,16 @@ type UploadResult = {
   mimetype?: string;
   error?: string;
 };
+
+function moveQueueItemToEnd(items: QueueItem[], id: string, patch: Partial<QueueItem>) {
+  const item = items.find((entry) => entry.id === id);
+
+  if (!item) {
+    return items;
+  }
+
+  return [...items.filter((entry) => entry.id !== id), { ...item, ...patch }];
+}
 
 function joinUrl(baseUrl: string, path: string) {
   return `${baseUrl.replace(/\/$/, "")}${path}`;
@@ -416,6 +445,7 @@ export default function Home() {
   const [bulkRecipientFile, setBulkRecipientFile] = useState<File | undefined>();
   const [bulkRecipientName, setBulkRecipientName] = useState("");
   const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [queueFilter, setQueueFilter] = useState<QueueFilter>("all");
   const [running, setRunning] = useState(false);
   const [busyAction, setBusyAction] = useState("");
   const [result, setResult] = useState<ProxyResult | null>(null);
@@ -428,12 +458,18 @@ export default function Home() {
       health: joinUrl(baseUrl, "/health"),
       status: joinUrl(baseUrl, `/status?token=${token}`),
       qr: joinUrl(baseUrl, `/qr?token=${token}`),
-      send: joinUrl(baseUrl, `/send?token=${token}`)
+      send: joinUrl(baseUrl, `/send?token=${token}`),
+      queue: joinUrl(baseUrl, `/queue?token=${token}`),
+      queueStart: joinUrl(baseUrl, `/queue/start?token=${token}`),
+      queuePause: joinUrl(baseUrl, `/queue/pause?token=${token}`),
+      queueRequeue: joinUrl(baseUrl, `/queue/requeue?token=${token}`),
+      queueClear: joinUrl(baseUrl, `/queue/clear?token=${token}`)
     };
   }, [adminToken, baseUrl]);
 
   const counts = useMemo(
     () => ({
+      all: queue.length,
       queued: queue.filter((item) => item.status === "queued").length,
       sending: queue.filter((item) => item.status === "sending").length,
       sent: queue.filter((item) => item.status === "sent").length,
@@ -441,6 +477,19 @@ export default function Home() {
     }),
     [queue]
   );
+
+  const filteredQueue = useMemo(
+    () => (queueFilter === "all" ? queue : queue.filter((item) => item.status === queueFilter)),
+    [queue, queueFilter]
+  );
+
+  const queueFilterTabs: { value: QueueFilter; label: string; count: number }[] = [
+    { value: "all", label: "All", count: counts.all },
+    { value: "queued", label: "Queued", count: counts.queued },
+    { value: "sending", label: "Sending", count: counts.sending },
+    { value: "sent", label: "Sent", count: counts.sent },
+    { value: "failed", label: "Failed", count: counts.failed }
+  ];
 
   useEffect(() => {
     const storedToken = localStorage.getItem(adminTokenStorageKey);
@@ -493,7 +542,7 @@ export default function Home() {
     url: string,
     method: "GET" | "POST" = "GET",
     payload: Record<string, unknown> | null = null
-  ) {
+  ): Promise<ProxyResult> {
     setBusyAction(action);
     setResult(null);
 
@@ -507,7 +556,7 @@ export default function Home() {
       setResult(data);
       return data;
     } catch (error) {
-      const data = {
+      const data: ProxyResult = {
         ok: false,
         error: error instanceof Error ? error.message : String(error)
       };
@@ -518,7 +567,73 @@ export default function Home() {
     }
   }
 
-  async function sendPayload(item: QueueItem) {
+  function getServerQueueData(result: ProxyResult | null) {
+    const data = result?.data as ServerQueueResponse | undefined;
+    return data?.ok && Array.isArray(data.items) ? data : null;
+  }
+
+  function syncServerQueue(serverItems: ServerQueueItem[]) {
+    setQueue((items) =>
+      items.map((item) => {
+        const serverItem = serverItems.find(
+          (entry) => entry.id === item.serverId || entry.clientId === item.id
+        );
+
+        if (!serverItem) {
+          return item;
+        }
+
+        return {
+          ...item,
+          serverId: serverItem.id,
+          status: serverItem.status,
+          attempts: serverItem.attempts,
+          lastError: serverItem.lastError,
+          sentAt: serverItem.sentAt
+        };
+      })
+    );
+  }
+
+  async function buildServerQueuePayload(item: QueueItem) {
+    const payload: Record<string, unknown> = {
+      clientId: item.id,
+      phone: item.phone,
+      text: item.text
+    };
+
+    if (item.file) {
+      const attachment = await getAttachment(item.file.attachmentId);
+
+      if (!attachment) {
+        throw new Error(`Missing attachment: ${item.file.fileName}`);
+      }
+
+      payload.dataUrl = attachment.dataUrl;
+      payload.fileName = attachment.fileName;
+      payload.mimetype = attachment.mimetype;
+    } else if (item.url) {
+      payload.url = item.url;
+    }
+
+    return payload;
+  }
+
+  async function uploadAttachment(attachment: StoredAttachment): Promise<UploadResult> {
+    const response = await fetch("/api/upload", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        dataUrl: attachment.dataUrl,
+        fileName: attachment.fileName,
+        mimetype: attachment.mimetype
+      })
+    });
+
+    return (await response.json()) as UploadResult;
+  }
+
+  async function sendPayloadInBrowser(item: QueueItem) {
     const payload: Record<string, unknown> = {
       phone: item.phone,
       text: item.text
@@ -550,33 +665,12 @@ export default function Home() {
       payload.url = item.url;
     }
 
-    return callApi("queue", endpoints.send, "POST", payload);
+    return callApi("send", endpoints.send, "POST", payload);
   }
 
-  async function uploadAttachment(attachment: StoredAttachment): Promise<UploadResult> {
-    const response = await fetch("/api/upload", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        dataUrl: attachment.dataUrl,
-        fileName: attachment.fileName,
-        mimetype: attachment.mimetype
-      })
-    });
-
-    return (await response.json()) as UploadResult;
-  }
-
-  async function processQueue() {
-    if (runningRef.current) {
-      return;
-    }
-
-    runningRef.current = true;
-    setRunning(true);
-
+  async function processQueueInBrowser() {
     while (runningRef.current) {
-      const next = queueRef.current.find((item) => item.status === "queued" || item.status === "failed");
+      const next = queueRef.current.find((item) => item.status === "queued");
 
       if (!next) {
         break;
@@ -594,42 +688,151 @@ export default function Home() {
 
       if (!health.ok) {
         setQueue((items) =>
-          items.map((item) =>
-            item.id === next.id
-              ? { ...item, status: "failed", lastError: "Health check failed" }
-              : item
-          )
+          moveQueueItemToEnd(items, next.id, {
+            status: "queued",
+            lastError: "Health check failed"
+          })
         );
         break;
       }
 
-      const sendResult = await sendPayload(next);
+      const sendResult = await sendPayloadInBrowser(next);
 
       setQueue((items) =>
-        items.map((item) =>
-          item.id === next.id
-            ? sendResult.ok
-              ? { ...item, status: "sent", sentAt: new Date().toISOString(), lastError: undefined }
-              : { ...item, status: "failed", lastError: getSendErrorMessage(sendResult) }
-            : item
-        )
+        sendResult.ok
+          ? items.map((item) =>
+              item.id === next.id
+                ? { ...item, status: "sent", sentAt: new Date().toISOString(), lastError: undefined }
+                : item
+            )
+          : moveQueueItemToEnd(items, next.id, {
+              status: "failed",
+              lastError: getSendErrorMessage(sendResult)
+            })
       );
-
-      if (!sendResult.ok) {
-        break;
-      }
 
       await new Promise((resolve) => setTimeout(resolve, 1200));
     }
+  }
 
-    runningRef.current = false;
-    setRunning(false);
+  async function enqueueQueuedItemsOnServer(): Promise<"server" | "empty" | "unsupported" | "failed"> {
+    const pending = queueRef.current.filter((item) => item.status === "queued" && !item.serverId);
+
+    if (!pending.length) {
+      return "empty";
+    }
+
+    try {
+      const payloads = await Promise.all(pending.map(buildServerQueuePayload));
+      const result = await callApi("queue", endpoints.queue, "POST", { items: payloads });
+      const data = getServerQueueData(result);
+
+      if (result.status === 404 || result.status === 405) {
+        return "unsupported";
+      }
+
+      if (!result.ok || !data) {
+        throw new Error(getSendErrorMessage(result));
+      }
+
+      syncServerQueue(data.items);
+      return "server";
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failedIds = new Set(pending.map((item) => item.id));
+
+      setQueue((items) =>
+        items.map((item) =>
+          failedIds.has(item.id) ? { ...item, status: "failed", lastError: message } : item
+        )
+      );
+      setResult({ ok: false, error: message });
+      return "failed";
+    }
+  }
+
+  async function refreshServerQueue() {
+    const result = await callApi("queue-status", endpoints.queue);
+    const data = getServerQueueData(result);
+
+    if (data) {
+      syncServerQueue(data.items);
+    }
+
+    return data;
+  }
+
+  async function pollServerQueue() {
+    while (runningRef.current) {
+      const data = await refreshServerQueue();
+
+      if (!data?.running) {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  }
+
+  async function processQueue() {
+    if (runningRef.current) {
+      return;
+    }
+
+    runningRef.current = true;
+    setRunning(true);
+
+    try {
+      const enqueueMode = await enqueueQueuedItemsOnServer();
+
+      if (enqueueMode === "failed") {
+        return;
+      }
+
+      if (enqueueMode === "unsupported") {
+        setResult({
+          ok: false,
+          error: "Backend queue is not deployed yet. Sending from this browser tab instead."
+        });
+        await processQueueInBrowser();
+        return;
+      }
+
+      const started = await callApi("queue-start", endpoints.queueStart, "POST", {});
+      const data = getServerQueueData(started);
+
+      if (!started.ok || !data) {
+        setResult({
+          ok: false,
+          error: "Backend queue could not start. Sending from this browser tab instead."
+        });
+        await processQueueInBrowser();
+        return;
+      }
+
+      if (data) {
+        syncServerQueue(data.items);
+      }
+
+      await pollServerQueue();
+    } finally {
+      runningRef.current = false;
+      setRunning(false);
+    }
   }
 
   const queueRef = useRef(queue);
   useEffect(() => {
     queueRef.current = queue;
   }, [queue]);
+
+  useEffect(() => {
+    if (!adminToken) {
+      return;
+    }
+
+    refreshServerQueue().catch(() => undefined);
+  }, [adminToken, baseUrl]);
 
   async function handleSingleFile(file?: File) {
     try {
@@ -720,6 +923,8 @@ export default function Home() {
   }
 
   async function clearFinished() {
+    await callApi("queue-clear", endpoints.queueClear, "POST", { status: "sent" });
+
     const sentAttachments = queue
       .filter((item) => item.status === "sent" && item.file)
       .map((item) => item.file!.attachmentId)
@@ -732,10 +937,54 @@ export default function Home() {
     setQueue((items) => items.filter((item) => item.status !== "sent"));
   }
 
-  function retryFailed() {
+  async function retryFailed() {
     setQueue((items) =>
-      items.map((item) => (item.status === "failed" ? { ...item, status: "queued" } : item))
+      items.map((item) =>
+        item.status === "failed" ? { ...item, status: "queued", lastError: undefined } : item
+      )
     );
+
+    const result = await callApi("queue-requeue", endpoints.queueRequeue, "POST", {});
+    const data = getServerQueueData(result);
+
+    if (data) {
+      syncServerQueue(data.items);
+    }
+  }
+
+  async function requeueItem(id: string) {
+    const item = queue.find((entry) => entry.id === id);
+
+    if (item?.serverId) {
+      const result = await callApi("queue-requeue", endpoints.queueRequeue, "POST", {
+        id: item.serverId
+      });
+      const data = getServerQueueData(result);
+
+      if (data) {
+        syncServerQueue(data.items);
+        return;
+      }
+    }
+
+    setQueue((items) =>
+      moveQueueItemToEnd(items, id, {
+        status: "queued",
+        lastError: undefined
+      })
+    );
+  }
+
+  async function pauseQueue() {
+    runningRef.current = false;
+    setRunning(false);
+
+    const result = await callApi("queue-pause", endpoints.queuePause, "POST", {});
+    const data = getServerQueueData(result);
+
+    if (data) {
+      syncServerQueue(data.items);
+    }
   }
 
   async function removeQueueItem(id: string) {
@@ -776,6 +1025,8 @@ export default function Home() {
   }
 
   async function clearQueue() {
+    await callApi("queue-clear", endpoints.queueClear, "POST", { all: true });
+
     const attachments = queue.filter((item) => item.file).map((item) => item.file!.attachmentId);
 
     await Promise.all([...new Set(attachments)].map(deleteAttachment));
@@ -901,7 +1152,7 @@ export default function Home() {
                 <Upload size={17} />
                 Add To Queue
               </Button>
-              <Button onClick={processQueue} disabled={running || !adminToken || !queue.length}>
+              <Button onClick={processQueue} disabled={running || !adminToken || !counts.queued}>
                 {running ? <Loader2 className="spin" size={17} /> : <Play size={17} />}
                 Start Queue
               </Button>
@@ -985,20 +1236,21 @@ export default function Home() {
             <h2>Durable Send Queue</h2>
           </div>
           <div className="queueActions">
-            <Button onClick={processQueue} disabled={running || !adminToken || !queue.length}>
+            <Button onClick={processQueue} disabled={running || !adminToken || !counts.queued}>
               {running ? <Loader2 className="spin" size={17} /> : <Play size={17} />}
               Resume
             </Button>
             <Button
               variant="secondary"
-              onClick={() => {
-                runningRef.current = false;
-                setRunning(false);
-              }}
+              onClick={pauseQueue}
               disabled={!running}
             >
               <Pause size={17} />
               Pause
+            </Button>
+            <Button variant="outline" onClick={refreshServerQueue} disabled={!adminToken}>
+              <RefreshCw size={17} />
+              Sync
             </Button>
             <Button variant="outline" onClick={retryFailed} disabled={!counts.failed}>
               <RefreshCw size={17} />
@@ -1020,8 +1272,17 @@ export default function Home() {
           <span>Sent {counts.sent}</span>
           <span>Failed {counts.failed}</span>
         </div>
+        <Tabs value={queueFilter} onValueChange={(value) => setQueueFilter(value as QueueFilter)}>
+          <TabsList className="queueTabs">
+            {queueFilterTabs.map((tab) => (
+              <TabsTrigger key={tab.value} value={tab.value}>
+                {tab.label} {tab.count}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
         <div className="queueList">
-          {queue.slice(0, 80).map((item) => (
+          {filteredQueue.slice(0, 80).map((item) => (
             <div className={`queueItem ${item.status}`} key={item.id}>
               <div>
                 <strong>{item.phone}</strong>
@@ -1032,6 +1293,11 @@ export default function Home() {
                 <span>{item.status} · attempts {item.attempts}</span>
                 {item.lastError ? <span>{item.lastError}</span> : null}
                 <div className="itemActions">
+                  {item.status === "failed" ? (
+                    <Button size="sm" variant="secondary" onClick={() => requeueItem(item.id)}>
+                      Requeue
+                    </Button>
+                  ) : null}
                   {item.file ? (
                     <Button
                       size="sm"
@@ -1049,6 +1315,9 @@ export default function Home() {
             </div>
           ))}
           {!queue.length ? <div className="emptyQueue">No messages queued</div> : null}
+          {queue.length && !filteredQueue.length ? (
+            <div className="emptyQueue">No {queueFilter} messages</div>
+          ) : null}
         </div>
       </section>
 
