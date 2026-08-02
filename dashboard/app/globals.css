@@ -357,10 +357,13 @@ h2 {
 
 .result {
   margin-top: 14px;
+  height: 260px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--input);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .result.empty {
@@ -407,6 +410,8 @@ pre {
   margin: 0;
   padding: 14px;
   overflow: auto;
+  flex: 1;
+  min-height: 0;
   color: #d6dee8;
   font-size: 13px;
   line-height: 1.5;

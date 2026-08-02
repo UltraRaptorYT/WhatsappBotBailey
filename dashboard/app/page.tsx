@@ -68,6 +68,12 @@ type QueueSettings = {
   messageDelayMs: number;
 };
 
+type QueueSettingsDraft = {
+  batchSize: string;
+  batchWaitMinutes: string;
+  messageDelaySeconds: string;
+};
+
 type ProxyResult = {
   ok: boolean;
   status?: number;
@@ -123,6 +129,14 @@ function joinUrl(baseUrl: string, path: string) {
 
 function uid() {
   return crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function toQueueSettingsDraft(settings: QueueSettings): QueueSettingsDraft {
+  return {
+    batchSize: String(settings.batchSize),
+    batchWaitMinutes: String(settings.batchWaitMs / 60000),
+    messageDelaySeconds: String(settings.messageDelayMs / 1000)
+  };
 }
 
 function parseCsv(text: string) {
@@ -461,10 +475,16 @@ export default function Home() {
     batchWaitMs: 5 * 60 * 1000,
     messageDelayMs: 1200
   });
+  const [queueSettingsDraft, setQueueSettingsDraft] = useState<QueueSettingsDraft>({
+    batchSize: "5",
+    batchWaitMinutes: "5",
+    messageDelaySeconds: "1.2"
+  });
   const [running, setRunning] = useState(false);
   const [busyAction, setBusyAction] = useState("");
   const [result, setResult] = useState<ProxyResult | null>(null);
   const runningRef = useRef(false);
+  const queueSettingsDraftDirtyRef = useRef(false);
 
   const endpoints = useMemo(() => {
     const token = encodeURIComponent(adminToken);
@@ -574,6 +594,22 @@ export default function Home() {
       sentAt: item.sentAt,
       createdAt: ""
     })));
+  }
+
+  function syncQueueSettingsFromServer(settings: QueueSettings, overwriteDraft = false) {
+    setQueueSettings(settings);
+
+    if (overwriteDraft || !queueSettingsDraftDirtyRef.current) {
+      setQueueSettingsDraft(toQueueSettingsDraft(settings));
+    }
+  }
+
+  function updateQueueSettingsDraft(
+    field: keyof QueueSettingsDraft,
+    value: string
+  ) {
+    queueSettingsDraftDirtyRef.current = true;
+    setQueueSettingsDraft((settings) => ({ ...settings, [field]: value }));
   }
 
   async function buildServerQueuePayload(item: QueueItem) {
@@ -744,7 +780,7 @@ export default function Home() {
       throw new Error(getSendErrorMessage(response));
     }
     syncServerQueue(data.items);
-    setQueueSettings(data.settings);
+    syncQueueSettingsFromServer(data.settings);
   }
 
   async function refreshServerQueue() {
@@ -753,7 +789,7 @@ export default function Home() {
 
     if (data) {
       syncServerQueue(data.items);
-      setQueueSettings(data.settings);
+      syncQueueSettingsFromServer(data.settings);
     }
 
     return data;
@@ -925,10 +961,41 @@ export default function Home() {
   }
 
   async function saveQueueSettings() {
-    const response = await callApi("queue-settings", endpoints.queueSettings, "POST", queueSettings);
+    const hasEmptyValue = Object.values(queueSettingsDraft).some((value) => value.trim() === "");
+    const batchSize = Number(queueSettingsDraft.batchSize);
+    const batchWaitMinutes = Number(queueSettingsDraft.batchWaitMinutes);
+    const messageDelaySeconds = Number(queueSettingsDraft.messageDelaySeconds);
+
+    if (hasEmptyValue) {
+      setResult({ ok: false, error: "All rate controls need a value" });
+      return;
+    }
+
+    if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 1000) {
+      setResult({ ok: false, error: "Messages per batch must be a whole number from 1 to 1000" });
+      return;
+    }
+
+    if (!Number.isFinite(batchWaitMinutes) || batchWaitMinutes < 0 || batchWaitMinutes > 1440) {
+      setResult({ ok: false, error: "Wait between batches must be from 0 to 1440 minutes" });
+      return;
+    }
+
+    if (!Number.isFinite(messageDelaySeconds) || messageDelaySeconds < 0 || messageDelaySeconds > 60) {
+      setResult({ ok: false, error: "Delay between messages must be from 0 to 60 seconds" });
+      return;
+    }
+
+    const settings: QueueSettings = {
+      batchSize,
+      batchWaitMs: Math.round(batchWaitMinutes * 60000),
+      messageDelayMs: Math.round(messageDelaySeconds * 1000)
+    };
+    const response = await callApi("queue-settings", endpoints.queueSettings, "POST", settings);
     const data = getServerQueueData(response);
     if (data) {
-      setQueueSettings(data.settings);
+      queueSettingsDraftDirtyRef.current = false;
+      syncQueueSettingsFromServer(data.settings, true);
       syncServerQueue(data.items);
     }
   }
@@ -1282,34 +1349,30 @@ export default function Home() {
             <Label htmlFor="batchSize">Messages per batch</Label>
             <Input
               id="batchSize"
-              type="number"
-              min="1"
-              max="1000"
-              value={queueSettings.batchSize}
-              onChange={(event) => setQueueSettings((settings) => ({ ...settings, batchSize: Number(event.target.value) || 1 }))}
+              type="text"
+              inputMode="numeric"
+              value={queueSettingsDraft.batchSize}
+              onChange={(event) => updateQueueSettingsDraft("batchSize", event.target.value)}
             />
           </div>
           <div className="field">
             <Label htmlFor="batchWait">Wait between batches (minutes)</Label>
             <Input
               id="batchWait"
-              type="number"
-              min="0"
-              max="1440"
-              value={queueSettings.batchWaitMs / 60000}
-              onChange={(event) => setQueueSettings((settings) => ({ ...settings, batchWaitMs: Math.max(0, Number(event.target.value) || 0) * 60000 }))}
+              type="text"
+              inputMode="decimal"
+              value={queueSettingsDraft.batchWaitMinutes}
+              onChange={(event) => updateQueueSettingsDraft("batchWaitMinutes", event.target.value)}
             />
           </div>
           <div className="field">
             <Label htmlFor="messageDelay">Delay between messages (seconds)</Label>
             <Input
               id="messageDelay"
-              type="number"
-              min="0"
-              max="60"
-              step="0.1"
-              value={queueSettings.messageDelayMs / 1000}
-              onChange={(event) => setQueueSettings((settings) => ({ ...settings, messageDelayMs: Math.max(0, Number(event.target.value) || 0) * 1000 }))}
+              type="text"
+              inputMode="decimal"
+              value={queueSettingsDraft.messageDelaySeconds}
+              onChange={(event) => updateQueueSettingsDraft("messageDelaySeconds", event.target.value)}
             />
           </div>
           <div className="field rateSave">
