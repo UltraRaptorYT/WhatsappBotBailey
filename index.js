@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import { fileURLToPath } from "node:url";
 import makeWASocket, {
   Browsers,
   DisconnectReason,
@@ -13,6 +14,7 @@ import { useSupabaseAuthState } from "./supabase-auth.js";
 const app = express();
 const port = process.env.PORT || 3000;
 const adminToken = process.env.ADMIN_TOKEN;
+const faviconPath = fileURLToPath(new URL("./dashboard/public/brand/favicon.ico", import.meta.url));
 
 let sock;
 let currentQr = null;
@@ -29,6 +31,7 @@ let queueSettings = {
   messageDelayMs: Number(process.env.QUEUE_SEND_DELAY_MS || 1200)
 };
 let queueStore;
+let authResetInProgress = false;
 
 process.on("unhandledRejection", (reason) => {
   lastBotError = getErrorMessage(reason);
@@ -110,6 +113,50 @@ async function saveQueueStore() {
       updated_at: new Date().toISOString()
     }, { onConflict: "session_id" });
   if (error) throw new Error(`Could not save durable queue: ${error.message}`);
+}
+
+async function clearWhatsAppAuth() {
+  const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false }
+  });
+  const { error } = await supabase
+    .from("baileys_auth")
+    .delete()
+    .eq("session_id", process.env.SESSION_ID || "main");
+
+  if (error) throw new Error(`Could not reset WhatsApp login: ${error.message}`);
+}
+
+async function resetWhatsAppSession({ pauseQueue = false } = {}) {
+  if (authResetInProgress) return;
+  authResetInProgress = true;
+
+  try {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+
+    if (pauseQueue) {
+      queuePaused = true;
+      await saveQueueStore();
+    }
+
+    cleanupSocket();
+    try {
+      sock?.ws?.close();
+    } catch (_error) {
+      // The old socket may already be closed.
+    }
+    sock = undefined;
+    currentQr = null;
+    lastBotError = null;
+    connectionStatus = "starting";
+    await clearWhatsAppAuth();
+    await startBot();
+  } finally {
+    authResetInProgress = false;
+  }
 }
 
 function getQueueCounts() {
@@ -435,6 +482,10 @@ app.get("/", (_req, res) => {
   res.type("text/plain").send("Baileys bot is running.");
 });
 
+app.get("/favicon.ico", (_req, res) => {
+  res.sendFile(faviconPath);
+});
+
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
@@ -458,6 +509,7 @@ app.get("/qr", requireAdmin, (_req, res) => {
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="/favicon.ico" sizes="any">
     <title>WhatsApp QR</title>
     <style>
       body { font-family: Arial, sans-serif; margin: 40px; text-align: center; }
@@ -477,6 +529,7 @@ app.get("/qr", requireAdmin, (_req, res) => {
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="/favicon.ico" sizes="any">
     <title>WhatsApp QR</title>
     <style>
       body { font-family: Arial, sans-serif; margin: 40px; text-align: center; }
@@ -537,6 +590,15 @@ async function sendMessageBody(body) {
 app.post("/send", requireAdmin, async (req, res) => {
   const result = await sendMessageBody(req.body || {});
   res.status(result.status).json(result.body);
+});
+
+app.post("/session/reset", requireAdmin, async (_req, res, next) => {
+  try {
+    await resetWhatsAppSession({ pauseQueue: true });
+    res.json({ ok: true, status: connectionStatus, message: "Login reset. Refresh the QR page in a few seconds." });
+  } catch (error) {
+    next(error);
+  }
 });
 
 function buildQueuedItem(rawItem) {
@@ -804,7 +866,12 @@ async function startBot() {
       console.log(`Connection closed. Reason: ${statusCode || "unknown"}`);
 
       if (loggedOut) {
-        console.log("Logged out. Clear Supabase auth rows and scan QR again.");
+        console.log("Logged out. Resetting stored auth so a new QR can be scanned.");
+        resetWhatsAppSession().catch((error) => {
+          lastBotError = getErrorMessage(error);
+          connectionStatus = "disconnected";
+          console.error("Automatic login reset failed:", error);
+        });
         return;
       }
 

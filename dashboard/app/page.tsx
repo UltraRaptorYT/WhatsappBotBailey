@@ -496,6 +496,7 @@ export default function Home() {
       health: joinUrl(baseUrl, "/health"),
       status: joinUrl(baseUrl, `/status?token=${token}`),
       qr: joinUrl(baseUrl, `/qr?token=${token}`),
+      sessionReset: joinUrl(baseUrl, `/session/reset?token=${token}`),
       send: joinUrl(baseUrl, `/send?token=${token}`),
       queue: joinUrl(baseUrl, `/queue?token=${token}`),
       queueStart: joinUrl(baseUrl, `/queue/start?token=${token}`),
@@ -1152,6 +1153,18 @@ export default function Home() {
               <FileUp size={17} />
               QR Page
             </a>
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              if (window.confirm("Reset the WhatsApp login and generate a new QR code? The send queue will be paused.")) {
+                callApi("session-reset", endpoints.sessionReset, "POST", {});
+              }
+            }}
+            disabled={busyAction !== "" || !adminToken}
+          >
+            <RefreshCw size={17} />
+            Reset WhatsApp Login
           </Button>
           <Button onClick={() => callApi("health", endpoints.health)} disabled={busyAction !== ""}>
             {busyAction === "health" ? <Loader2 className="spin" size={17} /> : <Activity size={17} />}

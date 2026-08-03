@@ -246,6 +246,7 @@ POST /send      Admin-protected send-message API
 GET  /queue     Read the shared durable queue
 POST /queue     Add messages to the shared queue
 POST /queue/start, /queue/pause, /queue/settings, /queue/remove
+POST /session/reset  Clear the linked WhatsApp login and generate a new QR
 ```
 
 Admin endpoints accept either:
