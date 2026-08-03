@@ -243,7 +243,7 @@ GET  /qr        Admin-protected QR page
 POST /send      Admin-protected send-message API
 GET  /queue     Read the shared durable queue
 POST /queue     Add messages to the shared queue
-POST /queue/start, /queue/pause, /queue/settings
+POST /queue/start, /queue/pause, /queue/settings, /queue/remove
 ```
 
 Admin endpoints accept either:

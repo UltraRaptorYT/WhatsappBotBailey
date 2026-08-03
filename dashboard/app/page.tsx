@@ -29,6 +29,7 @@ import { Textarea } from "@/components/ui/textarea";
 const defaultBotUrl =
   process.env.NEXT_PUBLIC_DEFAULT_BOT_URL || "https://whatsappbotbailey.onrender.com";
 const adminTokenStorageKey = "baileys-dashboard-admin-token";
+const activeTabStorageKey = "baileys-dashboard-active-tab";
 const attachmentDbName = "baileys-dashboard-attachments";
 const attachmentStoreName = "attachments";
 const memoryAttachments = new Map<string, StoredAttachment>();
@@ -470,6 +471,7 @@ export default function Home() {
   const [bulkRecipientName, setBulkRecipientName] = useState("");
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [queueFilter, setQueueFilter] = useState<QueueFilter>("all");
+  const [activeTab, setActiveTab] = useState<"bulk" | "single">("bulk");
   const [queueSettings, setQueueSettings] = useState<QueueSettings>({
     batchSize: 5,
     batchWaitMs: 5 * 60 * 1000,
@@ -498,6 +500,7 @@ export default function Home() {
       queueStart: joinUrl(baseUrl, `/queue/start?token=${token}`),
       queuePause: joinUrl(baseUrl, `/queue/pause?token=${token}`),
       queueRequeue: joinUrl(baseUrl, `/queue/requeue?token=${token}`),
+      queueRemove: joinUrl(baseUrl, `/queue/remove?token=${token}`),
       queueClear: joinUrl(baseUrl, `/queue/clear?token=${token}`),
       queueSettings: joinUrl(baseUrl, `/queue/settings?token=${token}`)
     };
@@ -529,10 +532,15 @@ export default function Home() {
 
   useEffect(() => {
     const storedToken = localStorage.getItem(adminTokenStorageKey);
+    const storedActiveTab = localStorage.getItem(activeTabStorageKey);
 
     if (storedToken) {
       setAdminToken(storedToken);
       setRememberToken(true);
+    }
+
+    if (storedActiveTab === "bulk" || storedActiveTab === "single") {
+      setActiveTab(storedActiveTab);
     }
 
   }, []);
@@ -1068,6 +1076,18 @@ export default function Home() {
   async function removeQueueItem(id: string) {
     const item = queue.find((entry) => entry.id === id);
 
+    if (!item?.serverId) {
+      setResult({ ok: false, error: "This queue item has not been saved to the shared queue yet" });
+      return;
+    }
+
+    const response = await callApi("queue-remove", endpoints.queueRemove, "POST", { id: item.serverId });
+    const data = getServerQueueData(response);
+
+    if (!data) {
+      return;
+    }
+
     if (
       item?.file &&
       !queue.some((entry) => entry.id !== id && entry.file?.attachmentId === item.file?.attachmentId)
@@ -1075,7 +1095,7 @@ export default function Home() {
       await deleteAttachment(item.file.attachmentId);
     }
 
-    setQueue((items) => items.filter((entry) => entry.id !== id));
+    syncServerQueue(data.items);
   }
 
   async function removeQueueItemAttachment(id: string) {
@@ -1172,15 +1192,24 @@ export default function Home() {
         </div>
       </section>
 
-      <Tabs defaultValue="single" className="tabsWrap">
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => {
+          if (value === "bulk" || value === "single") {
+            setActiveTab(value);
+            localStorage.setItem(activeTabStorageKey, value);
+          }
+        }}
+        className="tabsWrap"
+      >
         <TabsList>
+          <TabsTrigger value="bulk">
+            <FileSpreadsheet size={16} />
+            Bulk Messaging
+          </TabsTrigger>
           <TabsTrigger value="single">
             <Send size={16} />
             Single Message
-          </TabsTrigger>
-          <TabsTrigger value="bulk">
-            <FileSpreadsheet size={16} />
-            Bulk Message
           </TabsTrigger>
         </TabsList>
 

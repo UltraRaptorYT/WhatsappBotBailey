@@ -691,6 +691,23 @@ app.post("/queue/requeue", requireAdmin, async (req, res, next) => {
   res.json(getQueueSnapshot());
 });
 
+app.post("/queue/remove", requireAdmin, async (req, res, next) => {
+  const id = req.body?.id ? String(req.body.id) : "";
+  const item = sendQueue.find((entry) => entry.id === id);
+
+  if (!item) {
+    return res.status(404).json({ ok: false, error: "Queue item not found" });
+  }
+
+  if (item.status === "sending") {
+    return res.status(409).json({ ok: false, error: "A message currently being sent cannot be removed" });
+  }
+
+  sendQueue = sendQueue.filter((entry) => entry.id !== id);
+  try { await saveQueueStore(); } catch (error) { return next(error); }
+  res.json(getQueueSnapshot());
+});
+
 app.post("/queue/clear", requireAdmin, async (req, res, next) => {
   const status = req.body?.status ? String(req.body.status) : "";
   const removableStatuses = new Set(["sent", "failed"]);
