@@ -509,7 +509,8 @@ app.get("/qr", requireAdmin, (_req, res) => {
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="shortcut icon" href="/favicon.ico">
+    <link rel="icon" href="/favicon.ico">
     <title>WhatsApp QR</title>
     <style>
       body { font-family: Arial, sans-serif; margin: 40px; text-align: center; }
@@ -529,7 +530,8 @@ app.get("/qr", requireAdmin, (_req, res) => {
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="shortcut icon" href="/favicon.ico">
+    <link rel="icon" href="/favicon.ico">
     <title>WhatsApp QR</title>
     <style>
       body { font-family: Arial, sans-serif; margin: 40px; text-align: center; }
