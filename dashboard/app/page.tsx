@@ -30,6 +30,7 @@ const defaultBotUrl =
   process.env.NEXT_PUBLIC_DEFAULT_BOT_URL || "https://whatsappbotbailey.onrender.com";
 const adminTokenStorageKey = "baileys-dashboard-admin-token";
 const activeTabStorageKey = "baileys-dashboard-active-tab";
+const bulkMessageDraftStorageKey = "baileys-dashboard-bulk-message-draft";
 const attachmentDbName = "baileys-dashboard-attachments";
 const attachmentStoreName = "attachments";
 const memoryAttachments = new Map<string, StoredAttachment>();
@@ -533,6 +534,7 @@ export default function Home() {
   useEffect(() => {
     const storedToken = localStorage.getItem(adminTokenStorageKey);
     const storedActiveTab = localStorage.getItem(activeTabStorageKey);
+    const storedBulkMessage = localStorage.getItem(bulkMessageDraftStorageKey);
 
     if (storedToken) {
       setAdminToken(storedToken);
@@ -541,6 +543,10 @@ export default function Home() {
 
     if (storedActiveTab === "bulk" || storedActiveTab === "single") {
       setActiveTab(storedActiveTab);
+    }
+
+    if (storedBulkMessage !== null) {
+      setBulkText(storedBulkMessage);
     }
 
   }, []);
@@ -1294,11 +1300,15 @@ export default function Home() {
               </div>
             </div>
             <div className="field">
-              <Label htmlFor="bulkText">Default text</Label>
+              <Label htmlFor="bulkText">Message</Label>
               <Textarea
                 id="bulkText"
                 value={bulkText}
-                onChange={(event) => setBulkText(event.target.value)}
+                onChange={(event) => {
+                  const message = event.target.value;
+                  setBulkText(message);
+                  localStorage.setItem(bulkMessageDraftStorageKey, message);
+                }}
                 rows={4}
               />
             </div>
