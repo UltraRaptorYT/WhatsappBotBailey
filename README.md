@@ -218,6 +218,8 @@ Mobile Number,Name,text,ImageURL
 
 The dashboard replaces `{Column Name}` placeholders using the current Excel/CSV row, similar to the old Python bot. For example, `{Name}` is replaced from the `Name` column.
 
+Use `/br` in any message to split it into separate WhatsApp messages for the same recipient. For example, `First message /br Second message` queues and sends two messages in that order.
+
 `Mobile Number` is supported for compatibility with the old bot. If it contains an 8-digit Singapore number without `+65`, the dashboard prefixes `65` automatically. Without headers, column 1 is treated as `phone` and column 2 as `text`.
 
 If an `ImageURL` column is present, that URL is sent for that specific row unless a shared upload file is selected.

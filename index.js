@@ -565,6 +565,27 @@ function buildQueuedItem(rawItem) {
   };
 }
 
+function buildQueuedItems(rawItem) {
+  const payload = rawItem.payload || rawItem;
+  const text = payload.text == null ? "" : String(payload.text);
+  const parts = text
+    .split(/\s*\/br\s*/i)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  // Keep file-only messages valid, while splitting text messages into ordered sends.
+  const messageParts = parts.length ? parts : [text];
+  const baseClientId = rawItem.clientId ? String(rawItem.clientId) : undefined;
+
+  return messageParts.map((part, index) =>
+    buildQueuedItem({
+      ...rawItem,
+      clientId: baseClientId && messageParts.length > 1 ? `${baseClientId}-${index + 1}` : baseClientId,
+      payload: { ...payload, text: part }
+    })
+  );
+}
+
 async function processSendQueue() {
   if (queueRunning) {
     return;
@@ -629,7 +650,7 @@ app.get("/queue", requireAdmin, (_req, res) => {
 
 app.post("/queue", requireAdmin, async (req, res, next) => {
   const rawItems = Array.isArray(req.body?.items) ? req.body.items : [req.body || {}];
-  const items = rawItems.map(buildQueuedItem);
+  const items = rawItems.flatMap(buildQueuedItems);
 
   sendQueue.push(...items);
   try { await saveQueueStore(); } catch (error) { return next(error); }

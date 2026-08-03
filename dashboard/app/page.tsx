@@ -1330,7 +1330,8 @@ export default function Home() {
             <p className="hint">
               Recipient file columns: `Mobile Number` or `phone`, optional `text`, and optional
               `ImageURL`. Message templates can use placeholders like {"{Name}"} or{" "}
-              {"{Mobile Number}"}.
+              {"{Mobile Number}"}. Add `/br` anywhere in the message to send the text before and
+              after it as separate messages.
             </p>
           </section>
         </TabsContent>
