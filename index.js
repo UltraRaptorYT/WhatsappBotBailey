@@ -502,46 +502,167 @@ app.get("/status", requireAdmin, (_req, res) => {
   });
 });
 
-app.get("/qr", requireAdmin, (_req, res) => {
-  if (currentQr) {
-    return res.type("html").send(`<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="shortcut icon" href="/favicon.ico">
-    <link rel="icon" href="/favicon.ico">
-    <title>WhatsApp QR</title>
-    <style>
-      body { font-family: Arial, sans-serif; margin: 40px; text-align: center; }
-      img { width: min(320px, 90vw); height: auto; }
-    </style>
-  </head>
-  <body>
-    <h1>Scan this WhatsApp QR</h1>
-    <p>Open WhatsApp -> Linked devices -> Link a device</p>
-    <img src="${currentQr}" alt="WhatsApp login QR code">
-  </body>
-</html>`);
+app.get("/qr", requireAdmin, (req, res) => {
+  res.set({
+    "Cache-Control": "no-store, no-cache, must-revalidate, private",
+    Pragma: "no-cache",
+    Expires: "0"
+  });
+
+  if (req.query.format === "json") {
+    return res.json({
+      status: connectionStatus,
+      hasQr: Boolean(currentQr),
+      qr: currentQr,
+      lastError: lastBotError
+    });
   }
 
   res.type("html").send(`<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f5f7fb">
     <link rel="shortcut icon" href="/favicon.ico">
     <link rel="icon" href="/favicon.ico">
-    <title>WhatsApp QR</title>
+    <title>Connect WhatsApp | Bailey</title>
     <style>
-      body { font-family: Arial, sans-serif; margin: 40px; text-align: center; }
+      :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f5f7fb; }
+      * { box-sizing: border-box; }
+      body { min-height: 100vh; margin: 0; padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); display: grid; place-items: center; }
+      main { width: min(100%, 480px); text-align: center; }
+      .brand { margin: 0 0 18px; color: #64748b; font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+      .card { padding: clamp(20px, 6vw, 36px); border: 1px solid #e3e8f0; border-radius: 24px; background: #fff; box-shadow: 0 18px 55px rgb(24 39 75 / 9%); }
+      h1 { margin: 0; font-size: clamp(24px, 6vw, 32px); line-height: 1.15; letter-spacing: -.035em; }
+      .intro { margin: 12px 0 20px; color: #64748b; line-height: 1.55; }
+      .status { min-height: 24px; margin: 0 auto 18px; display: flex; align-items: center; justify-content: center; gap: 8px; color: #475569; font-size: 14px; }
+      .dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%; background: #94a3b8; }
+      .status[data-state="connected"] .dot { background: #16a34a; }
+      .status[data-state="qr_required"] .dot { background: #2563eb; }
+      .status[data-state="disconnected"] .dot { background: #dc2626; }
+      .spinner { width: 16px; height: 16px; border: 2px solid #dbe3ef; border-top-color: #2563eb; border-radius: 50%; animation: spin .8s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .qr-frame { width: min(100%, 360px); min-height: 220px; margin: 0 auto 18px; padding: 12px; display: grid; place-items: center; border: 1px solid #e2e8f0; border-radius: 18px; background: #fff; }
+      .qr-frame img { display: none; width: 100%; max-width: 320px; height: auto; image-rendering: pixelated; }
+      .qr-frame img.visible { display: block; }
+      .placeholder { max-width: 260px; padding: 20px; color: #64748b; font-size: 14px; line-height: 1.55; }
+      .instructions { margin: 0; color: #475569; font-size: 14px; line-height: 1.6; }
+      .hint { margin: 8px 0 0; color: #94a3b8; font-size: 12px; }
+      .error { display: none; margin: 16px 0 0; padding: 12px 14px; border-radius: 12px; background: #fff1f2; color: #be123c; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+      .error.visible { display: block; }
+      .actions { margin-top: 20px; }
+      button { min-height: 44px; padding: 0 18px; border: 0; border-radius: 12px; background: #172033; color: #fff; font: inherit; font-size: 14px; font-weight: 650; cursor: pointer; }
+      button:hover { background: #29364f; }
+      button:focus-visible { outline: 3px solid #93c5fd; outline-offset: 3px; }
+      @media (max-width: 380px) { body { padding-inline: 12px; } .card { border-radius: 20px; } .qr-frame { min-height: 190px; padding: 8px; } }
+      @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; } }
     </style>
   </head>
   <body>
-    <h1>No QR right now</h1>
-    <p>Status: ${connectionStatus}</p>
-    <p>If already connected, you do not need to scan again.</p>
-    ${lastBotError ? `<pre>${lastBotError}</pre>` : ""}
+    <main>
+      <p class="brand">Bailey · WhatsApp setup</p>
+      <section class="card" aria-labelledby="title">
+        <h1 id="title">Link your WhatsApp</h1>
+        <p class="intro">Keep this page open while you scan the code with your phone.</p>
+        <p class="status" id="status" data-state="starting" role="status" aria-live="polite"><span class="spinner" id="spinner" aria-hidden="true"></span><span id="status-text">Connecting to WhatsApp…</span></p>
+        <div class="qr-frame">
+          <img id="qr-image" alt="WhatsApp device linking QR code" />
+          <p class="placeholder" id="placeholder">The QR code will appear here as soon as WhatsApp provides one.</p>
+        </div>
+        <p class="instructions" id="instructions">Open WhatsApp → Settings → Linked devices → Link a device.</p>
+        <p class="hint" id="hint">This page refreshes the QR automatically.</p>
+        <p class="error" id="error" role="alert"></p>
+        <div class="actions"><button id="refresh" type="button">Check connection</button></div>
+      </section>
+    </main>
+    <script>
+      const statusEl = document.getElementById("status");
+      const statusText = document.getElementById("status-text");
+      const spinner = document.getElementById("spinner");
+      const qrImage = document.getElementById("qr-image");
+      const placeholder = document.getElementById("placeholder");
+      const instructions = document.getElementById("instructions");
+      const hint = document.getElementById("hint");
+      const errorEl = document.getElementById("error");
+      const query = new URLSearchParams(window.location.search);
+      query.set("format", "json");
+      const statusUrl = window.location.pathname + "?" + query.toString();
+      let polling = false;
+
+      function showQr(qr) {
+        if (qrImage.src !== qr) qrImage.src = qr;
+        qrImage.classList.add("visible");
+        placeholder.hidden = true;
+        instructions.hidden = false;
+        hint.hidden = false;
+      }
+
+      function hideQr(message) {
+        qrImage.removeAttribute("src");
+        qrImage.classList.remove("visible");
+        placeholder.hidden = false;
+        placeholder.textContent = message;
+        instructions.hidden = true;
+        hint.hidden = true;
+      }
+
+      function renderState(data) {
+        const state = data.status || "starting";
+        statusEl.dataset.state = state;
+        errorEl.textContent = data.lastError || "";
+        errorEl.classList.toggle("visible", Boolean(data.lastError));
+        spinner.hidden = state === "connected";
+
+        if (state === "connected") {
+          statusText.textContent = "WhatsApp is connected";
+          hideQr("Connected successfully. You can close this page; no scan is needed.");
+          return;
+        }
+
+        if (data.hasQr && data.qr) {
+          statusText.textContent = "QR ready · waiting for your scan";
+          showQr(data.qr);
+          return;
+        }
+
+        if (state === "qr_required") {
+          statusText.textContent = "Preparing a fresh QR code…";
+          hideQr("WhatsApp is preparing the QR code. This page will update automatically.");
+        } else if (state === "disconnected") {
+          statusText.textContent = "Reconnecting to WhatsApp…";
+          hideQr("The bot is reconnecting. Keep this page open; it will show a new QR if needed.");
+        } else {
+          statusText.textContent = "Connecting to WhatsApp…";
+          hideQr("Waiting for WhatsApp to start the device-linking process…");
+        }
+      }
+
+      async function refreshStatus() {
+        if (polling) return;
+        polling = true;
+        try {
+          const response = await fetch(statusUrl, { cache: "no-store", headers: { Accept: "application/json" } });
+          if (!response.ok) throw new Error(response.status === 401 ? "This link is no longer authorized. Reopen it with the admin token." : "The bot returned HTTP " + response.status + ". Retrying…");
+          renderState(await response.json());
+        } catch (error) {
+          statusEl.dataset.state = "disconnected";
+          spinner.hidden = false;
+          statusText.textContent = "Waiting for the bot…";
+          errorEl.textContent = error instanceof Error ? error.message : "Could not reach the bot. Retrying…";
+          errorEl.classList.add("visible");
+        } finally {
+          polling = false;
+          if (document.visibilityState === "visible") window.setTimeout(refreshStatus, 2000);
+        }
+      }
+
+      document.getElementById("refresh").addEventListener("click", refreshStatus);
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") refreshStatus();
+      });
+      refreshStatus();
+    </script>
   </body>
 </html>`);
 });
