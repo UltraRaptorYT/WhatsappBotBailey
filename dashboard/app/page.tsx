@@ -1618,19 +1618,17 @@ export default function Home() {
                   {messageParts.length ? (
                     <div className="queueMessageList">
                       {messageParts.map((part, index) => (
-                        <details
+                        <div
                           className={`queueMessagePart ${messageParts.length > 1 ? "multipart" : ""}`}
                           key={`${item.id}-${index}`}
                         >
-                          <summary>
-                            {messageParts.length > 1 ? (
+                          {messageParts.length > 1 ? (
+                            <div className="queueMessagePartHeading">
                               <span className="queuePartLabel">Message {index + 1}</span>
-                            ) : null}
-                            <span className="queueMessagePreview">{part}</span>
-                            <span className="queueExpandLabel" aria-hidden="true" />
-                          </summary>
+                            </div>
+                          ) : null}
                           <div className="queueMessageFull">{part}</div>
-                        </details>
+                        </div>
                       ))}
                     </div>
                   ) : (
