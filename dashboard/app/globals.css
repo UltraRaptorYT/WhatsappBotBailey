@@ -107,12 +107,20 @@ h2 {
 .messageEditorWithPreview {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
-  align-items: start;
+  align-items: stretch;
   gap: 16px;
 }
 
-.whatsappPreview {
+.messageEditorWithPreview > .field {
   min-width: 0;
+}
+
+.whatsappPreview {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -140,10 +148,11 @@ h2 {
 
 .whatsappPreviewChat {
   display: grid;
+  flex: 1 1 0;
   align-content: start;
   gap: 9px;
-  min-height: 210px;
-  max-height: 390px;
+  min-height: 0;
+  max-height: none;
   overflow: auto;
   padding: 12px;
   border-radius: 7px;
@@ -640,11 +649,29 @@ pre {
     flex-direction: column;
   }
 
+  .queueHeader,
+  .queueActions,
+  .queueRateControls,
+  .queueRateControls .field {
+    width: 100%;
+    min-width: 0;
+  }
+
   .topActions,
   .queueActions,
   .buttonRow {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .queueActions .ui-button,
+  .queueRateControls .ui-input {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .queueRateControls {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .ui-tabs-list {
@@ -693,11 +720,14 @@ pre {
     gap: 12px;
   }
 
-  .topActions,
-  .queueActions {
+  .topActions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     width: 100%;
+  }
+
+  .queueActions {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .topActions .ui-button,
@@ -733,8 +763,6 @@ pre {
   }
 
   .whatsappPreviewChat {
-    min-height: 150px;
-    max-height: 50vh;
     padding: 9px;
   }
 

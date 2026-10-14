@@ -304,6 +304,41 @@ function renderWhatsAppFormatting(text: string): ReactNode[] {
   return nodes;
 }
 
+function WhatsAppPreview({ text, height }: { text: string; height: number | null }) {
+  const previewParts = splitQueuedMessage(text);
+
+  return (
+    <aside
+      className="whatsappPreview"
+      aria-label="WhatsApp formatted message preview"
+      style={height ? { height } : undefined}
+    >
+      <div className="whatsappPreviewHeader">
+        <strong>WhatsApp preview</strong>
+        <span>Formatting</span>
+      </div>
+      <div className="whatsappPreviewChat">
+        {previewParts.length ? (
+          previewParts.map((part, index) => (
+            <div className="whatsappPreviewBubble" key={`preview-${index}`}>
+              {previewParts.length > 1 ? (
+                <span className="whatsappPreviewPartLabel">Message {index + 1}</span>
+              ) : null}
+              <div className="whatsappPreviewText">{renderWhatsAppFormatting(part)}</div>
+              <span className="whatsappPreviewTime">now</span>
+            </div>
+          ))
+        ) : (
+          <p className="whatsappPreviewEmpty">Your message preview will appear here.</p>
+        )}
+      </div>
+      <p className="whatsappPreviewNote">
+        Uses *bold*, _italic_, ~strikethrough~, and backticks for monospace.
+      </p>
+    </aside>
+  );
+}
+
 function rowsToQueueItems(rows: string[][], defaultText: string, file?: UploadFile) {
   if (!rows.length) {
     return [];
@@ -532,8 +567,10 @@ export default function Home() {
   const [rememberToken, setRememberToken] = useState(false);
   const [singlePhone, setSinglePhone] = useState("");
   const [singleText, setSingleText] = useState("Hello from dashboard");
+  const [singlePreviewHeight, setSinglePreviewHeight] = useState<number | null>(null);
   const [singleFile, setSingleFile] = useState<UploadFile | undefined>();
   const [bulkText, setBulkText] = useState("Hello from dashboard");
+  const [bulkPreviewHeight, setBulkPreviewHeight] = useState<number | null>(null);
   const [bulkFile, setBulkFile] = useState<UploadFile | undefined>();
   const [bulkRecipientFile, setBulkRecipientFile] = useState<File | undefined>();
   const [bulkRecipientName, setBulkRecipientName] = useState("");
@@ -555,6 +592,8 @@ export default function Home() {
   const [result, setResult] = useState<ProxyResult | null>(null);
   const runningRef = useRef(false);
   const queueSettingsDraftDirtyRef = useRef(false);
+  const singleTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const bulkTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const endpoints = useMemo(() => {
     const token = encodeURIComponent(adminToken);
@@ -628,6 +667,27 @@ export default function Home() {
     }
 
   }, []);
+
+  useEffect(() => {
+    const textarea = activeTab === "single" ? singleTextAreaRef.current : bulkTextAreaRef.current;
+    const updateHeight = activeTab === "single" ? setSinglePreviewHeight : setBulkPreviewHeight;
+
+    if (!textarea) {
+      updateHeight(null);
+      return;
+    }
+
+    const measure = () => updateHeight(textarea.getBoundingClientRect().height);
+    measure();
+
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(measure);
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, [activeTab]);
 
   useEffect(() => {
     if (rememberToken && adminToken) {
@@ -1348,18 +1408,22 @@ export default function Home() {
                 />
               </div>
             </div>
-            <div className="field">
-              <Label htmlFor="singleText">Text</Label>
-              <Textarea
-                id="singleText"
-                value={singleText}
-                onChange={(event) => {
-                  const message = event.target.value;
-                  setSingleText(message);
-                  localStorage.setItem(singleMessageDraftStorageKey, message);
-                }}
-                rows={4}
-              />
+            <div className="messageEditorWithPreview">
+              <div className="field">
+                <Label htmlFor="singleText">Text</Label>
+                <Textarea
+                  ref={singleTextAreaRef}
+                  id="singleText"
+                  value={singleText}
+                  onChange={(event) => {
+                    const message = event.target.value;
+                    setSingleText(message);
+                    localStorage.setItem(singleMessageDraftStorageKey, message);
+                  }}
+                  rows={4}
+                />
+              </div>
+              <WhatsAppPreview text={singleText} height={singlePreviewHeight} />
             </div>
             {singleFile ? (
               <div className="fileChip">
@@ -1410,6 +1474,7 @@ export default function Home() {
               <div className="field">
                 <Label htmlFor="bulkText">Message</Label>
                 <Textarea
+                  ref={bulkTextAreaRef}
                   id="bulkText"
                   value={bulkText}
                   onChange={(event) => {
@@ -1420,33 +1485,7 @@ export default function Home() {
                   rows={7}
                 />
               </div>
-              <aside className="whatsappPreview" aria-label="WhatsApp formatted message preview">
-                <div className="whatsappPreviewHeader">
-                  <strong>WhatsApp preview</strong>
-                  <span>Formatting</span>
-                </div>
-                <div className="whatsappPreviewChat">
-                  {(() => {
-                    const previewParts = splitQueuedMessage(bulkText);
-                    return previewParts.length ? (
-                      previewParts.map((part, index) => (
-                        <div className="whatsappPreviewBubble" key={`preview-${index}`}>
-                          {previewParts.length > 1 ? (
-                            <span className="whatsappPreviewPartLabel">Message {index + 1}</span>
-                          ) : null}
-                          <div className="whatsappPreviewText">{renderWhatsAppFormatting(part)}</div>
-                          <span className="whatsappPreviewTime">now</span>
-                        </div>
-                      ))
-                    ) : (
-                      <p className="whatsappPreviewEmpty">Your message preview will appear here.</p>
-                    );
-                  })()}
-                </div>
-                <p className="whatsappPreviewNote">
-                  Uses *bold*, _italic_, ~strikethrough~, and backticks for monospace.
-                </p>
-              </aside>
+              <WhatsAppPreview text={bulkText} height={bulkPreviewHeight} />
             </div>
             {bulkFile ? (
               <div className="fileChip">
