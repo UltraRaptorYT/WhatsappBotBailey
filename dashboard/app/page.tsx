@@ -30,6 +30,8 @@ const defaultBotUrl =
   process.env.NEXT_PUBLIC_DEFAULT_BOT_URL || "https://whatsappbotbailey.onrender.com";
 const adminTokenStorageKey = "baileys-dashboard-admin-token";
 const activeTabStorageKey = "baileys-dashboard-active-tab";
+const singlePhoneDraftStorageKey = "baileys-dashboard-single-phone-draft";
+const singleMessageDraftStorageKey = "baileys-dashboard-single-message-draft";
 const bulkMessageDraftStorageKey = "baileys-dashboard-bulk-message-draft";
 const attachmentDbName = "baileys-dashboard-attachments";
 const attachmentStoreName = "attachments";
@@ -234,11 +236,25 @@ function normalizePhone(value: string) {
 
   const digits = trimmed.replace(/\D/g, "");
 
-  if (!trimmed.startsWith("+") && digits.length === 8) {
-    return `65${digits}`;
+  if (trimmed.startsWith("+")) {
+    return digits;
   }
 
-  return digits;
+  if (digits.startsWith("65")) {
+    return digits;
+  }
+
+  return `65${digits}`;
+}
+
+function formatPhoneForInput(value: string) {
+  const trimmed = value.trim();
+
+  if (trimmed.startsWith("+")) {
+    return `+${trimmed.replace(/\D/g, "")}`;
+  }
+
+  return normalizePhone(trimmed);
 }
 
 function splitQueuedMessage(text: string) {
@@ -586,6 +602,8 @@ export default function Home() {
   useEffect(() => {
     const storedToken = localStorage.getItem(adminTokenStorageKey);
     const storedActiveTab = localStorage.getItem(activeTabStorageKey);
+    const storedSinglePhone = localStorage.getItem(singlePhoneDraftStorageKey);
+    const storedSingleMessage = localStorage.getItem(singleMessageDraftStorageKey);
     const storedBulkMessage = localStorage.getItem(bulkMessageDraftStorageKey);
 
     if (storedToken) {
@@ -595,6 +613,14 @@ export default function Home() {
 
     if (storedActiveTab === "bulk" || storedActiveTab === "single") {
       setActiveTab(storedActiveTab);
+    }
+
+    if (storedSinglePhone !== null) {
+      setSinglePhone(storedSinglePhone);
+    }
+
+    if (storedSingleMessage !== null) {
+      setSingleText(storedSingleMessage);
     }
 
     if (storedBulkMessage !== null) {
@@ -1004,7 +1030,7 @@ export default function Home() {
   }
 
   async function enqueueSingle() {
-    const phone = singlePhone.replace(/\D/g, "");
+    const phone = normalizePhone(singlePhone);
 
     if (!phone) {
       setResult({ ok: false, error: "Phone is required" });
@@ -1297,9 +1323,20 @@ export default function Home() {
                 <Input
                   id="singlePhone"
                   value={singlePhone}
-                  onChange={(event) => setSinglePhone(event.target.value)}
-                  placeholder="6591234567"
+                  onChange={(event) => {
+                    const phone = event.target.value;
+                    setSinglePhone(phone);
+                    localStorage.setItem(singlePhoneDraftStorageKey, phone);
+                  }}
+                  onBlur={() => {
+                    if (!singlePhone.trim()) return;
+                    const phone = formatPhoneForInput(singlePhone);
+                    setSinglePhone(phone);
+                    localStorage.setItem(singlePhoneDraftStorageKey, phone);
+                  }}
+                  placeholder="91234567 or +1 202 555 0123"
                 />
+                <span className="hint">Numbers without a country code use +65. For other countries, start with + and the country code.</span>
               </div>
               <div className="field">
                 <Label htmlFor="singleUpload">Image or document</Label>
@@ -1316,7 +1353,11 @@ export default function Home() {
               <Textarea
                 id="singleText"
                 value={singleText}
-                onChange={(event) => setSingleText(event.target.value)}
+                onChange={(event) => {
+                  const message = event.target.value;
+                  setSingleText(message);
+                  localStorage.setItem(singleMessageDraftStorageKey, message);
+                }}
                 rows={4}
               />
             </div>
@@ -1517,12 +1558,6 @@ export default function Home() {
               Save rate controls
             </Button>
           </div>
-        </div>
-        <div className="stats">
-          <span>Queued {counts.queued}</span>
-          <span>Sending {counts.sending}</span>
-          <span>Sent {counts.sent}</span>
-          <span>Failed {counts.failed}</span>
         </div>
         <Tabs value={queueFilter} onValueChange={(value) => setQueueFilter(value as QueueFilter)}>
           <TabsList className="queueTabs">

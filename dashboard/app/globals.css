@@ -356,7 +356,6 @@ h2 {
 
 .fileChip,
 .hint,
-.stats,
 .emptyQueue {
   color: var(--muted);
 }
@@ -389,18 +388,6 @@ h2 {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-}
-
-.stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.stats span {
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 6px 10px;
 }
 
 .queueTabs {
@@ -666,11 +653,108 @@ pre {
 
   .queueTabs {
     width: 100%;
+    justify-content: flex-start;
     overflow-x: auto;
+    scrollbar-width: thin;
   }
 
   .ui-tabs-trigger {
     flex: 1;
     justify-content: center;
+  }
+
+  .queueTabs .ui-tabs-trigger {
+    flex: 0 0 auto;
+  }
+
+  .messageEditorWithPreview > *,
+  .queueItem > * {
+    min-width: 0;
+  }
+
+  .queueList {
+    max-height: min(60vh, 520px);
+  }
+}
+
+@media (max-width: 520px) {
+  .shell {
+    width: calc(100vw - 20px);
+    padding: 16px 0;
+  }
+
+  .panel {
+    padding: 12px;
+    border-radius: 10px;
+  }
+
+  .topbar,
+  .queueHeader {
+    gap: 12px;
+  }
+
+  .topActions,
+  .queueActions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .topActions .ui-button,
+  .queueActions .ui-button {
+    min-width: 0;
+    padding: 0 8px;
+    white-space: normal;
+    line-height: 1.2;
+  }
+
+  .itemActions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .itemActions .ui-button {
+    min-width: 0;
+    padding: 0 8px;
+  }
+
+  .queueItem {
+    gap: 12px;
+    padding: 10px;
+  }
+
+  .queueMessagePart.multipart summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .queuePartLabel {
+    grid-column: 1 / -1;
+    width: fit-content;
+  }
+
+  .whatsappPreviewChat {
+    min-height: 150px;
+    max-height: 50vh;
+    padding: 9px;
+  }
+
+  .resultHeader {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+}
+
+@media (max-width: 360px) {
+  .ui-tabs-trigger {
+    gap: 5px;
+    padding: 0 7px;
+    font-size: 13px;
+  }
+
+  .topActions,
+  .queueActions,
+  .itemActions {
+    grid-template-columns: 1fr;
   }
 }
