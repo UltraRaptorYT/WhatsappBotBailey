@@ -59,6 +59,8 @@ type QueueItem = {
   url?: string;
   status: QueueStatus;
   attempts: number;
+  partsSent?: number;
+  partsTotal?: number;
   lastError?: string;
   createdAt: string;
   sentAt?: string;
@@ -92,6 +94,8 @@ type ServerQueueItem = {
   text: string;
   fileName?: string;
   hasAttachment?: boolean;
+  partsSent?: number;
+  partsTotal?: number;
   status: QueueStatus;
   attempts: number;
   lastError?: string;
@@ -605,6 +609,8 @@ export default function Home() {
       text: item.text,
       status: item.status,
       attempts: item.attempts,
+      partsSent: item.partsSent,
+      partsTotal: item.partsTotal,
       lastError: item.lastError,
       sentAt: item.sentAt,
       createdAt: ""
@@ -1354,7 +1360,7 @@ export default function Home() {
               Recipient file columns: `Mobile Number` or `phone`, optional `text`, and optional
               `ImageURL`. Message templates can use placeholders like {"{Name}"} or{" "}
               {"{Mobile Number}"}. Add `/br` anywhere in the message to send the text before and
-              after it as separate messages.
+              after it as separate messages within the same queue item.
             </p>
           </section>
         </TabsContent>
@@ -1460,6 +1466,9 @@ export default function Home() {
               <div>
                 <span>{item.file ? item.file.fileName : item.url ? item.url : "text"}</span>
                 <span>{item.status} · attempts {item.attempts}</span>
+                {item.partsTotal && item.partsTotal > 1 ? (
+                  <span>{item.partsSent || 0}/{item.partsTotal} message parts sent</span>
+                ) : null}
                 {item.lastError ? <span>{item.lastError}</span> : null}
                 <div className="itemActions">
                   {item.status === "failed" ? (

@@ -186,6 +186,8 @@ function moveQueueItemToEnd(id, patch) {
 }
 
 function publicQueueItem(item) {
+  const messageParts = splitMessageText(item.payload?.text);
+
   return {
     id: item.id,
     clientId: item.clientId,
@@ -199,7 +201,9 @@ function publicQueueItem(item) {
     updatedAt: item.updatedAt,
     sentAt: item.sentAt,
     fileName: item.fileName,
-    hasAttachment: Boolean(item.payload?.url || item.payload?.dataUrl || item.payload?.base64)
+    hasAttachment: Boolean(item.payload?.url || item.payload?.dataUrl || item.payload?.base64),
+    partsSent: Number(item.completedParts) || 0,
+    partsTotal: messageParts.length
   };
 }
 
@@ -750,25 +754,54 @@ function buildQueuedItem(rawItem) {
   };
 }
 
-function buildQueuedItems(rawItem) {
-  const payload = rawItem.payload || rawItem;
-  const text = payload.text == null ? "" : String(payload.text);
-  const parts = text
+function splitMessageText(text) {
+  const parts = String(text ?? "")
     .split(/\s*\/br\s*/i)
     .map((part) => part.trim())
     .filter(Boolean);
 
-  // Keep file-only messages valid, while splitting text messages into ordered sends.
-  const messageParts = parts.length ? parts : [text];
-  const baseClientId = rawItem.clientId ? String(rawItem.clientId) : undefined;
+  // Keep file-only messages valid.
+  return parts.length ? parts : [String(text ?? "")];
+}
 
-  return messageParts.map((part, index) =>
-    buildQueuedItem({
-      ...rawItem,
-      clientId: baseClientId && messageParts.length > 1 ? `${baseClientId}-${index + 1}` : baseClientId,
-      payload: { ...payload, text: part }
-    })
-  );
+function buildQueuedItems(rawItem) {
+  // Keep /br segments together as one durable queue item so a batch pause
+  // cannot land between two messages intended for the same recipient.
+  return [buildQueuedItem(rawItem)];
+}
+
+async function sendQueuedItem(item) {
+  const payload = item.payload || {};
+  const parts = splitMessageText(payload.text);
+  const completedParts = Math.min(parts.length, Math.max(0, Number(item.completedParts) || 0));
+  let lastResult;
+
+  for (let index = completedParts; index < parts.length; index += 1) {
+    lastResult = await sendMessageBody({ ...payload, text: parts[index] });
+
+    if (!lastResult.body.ok) {
+      return lastResult;
+    }
+
+    // Persist progress after every part. If the process restarts, it can
+    // resume this queue item at the next unsent part instead of resending
+    // parts that were already delivered.
+    item.completedParts = index + 1;
+    item.updatedAt = new Date().toISOString();
+    await saveQueueStore();
+
+    if (index < parts.length - 1) {
+      await waitWhileQueueActive(queueSettings.messageDelayMs);
+      if (queuePaused) {
+        return { status: 409, body: { ok: false, error: "Queue paused" } };
+      }
+    }
+  }
+
+  return lastResult || {
+    status: 200,
+    body: { ok: true, to: item.jid || item.phone, type: "text", text: "" }
+  };
 }
 
 async function processSendQueue() {
@@ -794,16 +827,16 @@ async function processSendQueue() {
       next.updatedAt = new Date().toISOString();
       await saveQueueStore();
 
-      const result = await sendMessageBody(next.payload);
+      const result = await sendQueuedItem(next);
 
       if (result.body.ok) {
         next.status = "sent";
         next.sentAt = new Date().toISOString();
         next.updatedAt = next.sentAt;
         next.lastError = undefined;
-      } else if (result.body.error === "WhatsApp is not connected") {
+      } else if (result.body.error === "WhatsApp is not connected" || result.body.error === "Queue paused") {
         next.status = "queued";
-        next.lastError = result.body.error;
+        next.lastError = result.body.error === "Queue paused" ? undefined : result.body.error;
         next.updatedAt = new Date().toISOString();
         break;
       } else {
