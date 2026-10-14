@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ExcelJS from "exceljs";
 import {
   Activity,
@@ -239,6 +239,53 @@ function normalizePhone(value: string) {
   }
 
   return digits;
+}
+
+function splitQueuedMessage(text: string) {
+  return text
+    .split(/\s*\/br\s*/i)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function renderWhatsAppFormatting(text: string): ReactNode[] {
+  const pattern = /(```[\s\S]+?```|`[^`\n]+`|\*[^*\n]+\*|_[^_\n]+_|~[^~\n]+~)/g;
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  let tokenIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text))) {
+    const [token] = match;
+    if (match.index > cursor) {
+      nodes.push(text.slice(cursor, match.index));
+    }
+
+    const content = token.startsWith("```")
+      ? token.slice(3, -3)
+      : token.slice(1, -1);
+    const key = `format-${tokenIndex++}`;
+
+    if (token.startsWith("```")) {
+      nodes.push(<code className="whatsappCodeBlock" key={key}>{content}</code>);
+    } else if (token.startsWith("`")) {
+      nodes.push(<code key={key}>{content}</code>);
+    } else if (token.startsWith("*")) {
+      nodes.push(<strong key={key}>{content}</strong>);
+    } else if (token.startsWith("_")) {
+      nodes.push(<em key={key}>{content}</em>);
+    } else {
+      nodes.push(<s key={key}>{content}</s>);
+    }
+
+    cursor = match.index + token.length;
+  }
+
+  if (cursor < text.length) {
+    nodes.push(text.slice(cursor));
+  }
+
+  return nodes;
 }
 
 function rowsToQueueItems(rows: string[][], defaultText: string, file?: UploadFile) {
@@ -1318,18 +1365,47 @@ export default function Home() {
                 />
               </div>
             </div>
-            <div className="field">
-              <Label htmlFor="bulkText">Message</Label>
-              <Textarea
-                id="bulkText"
-                value={bulkText}
-                onChange={(event) => {
-                  const message = event.target.value;
-                  setBulkText(message);
-                  localStorage.setItem(bulkMessageDraftStorageKey, message);
-                }}
-                rows={4}
-              />
+            <div className="messageEditorWithPreview">
+              <div className="field">
+                <Label htmlFor="bulkText">Message</Label>
+                <Textarea
+                  id="bulkText"
+                  value={bulkText}
+                  onChange={(event) => {
+                    const message = event.target.value;
+                    setBulkText(message);
+                    localStorage.setItem(bulkMessageDraftStorageKey, message);
+                  }}
+                  rows={7}
+                />
+              </div>
+              <aside className="whatsappPreview" aria-label="WhatsApp formatted message preview">
+                <div className="whatsappPreviewHeader">
+                  <strong>WhatsApp preview</strong>
+                  <span>Formatting</span>
+                </div>
+                <div className="whatsappPreviewChat">
+                  {(() => {
+                    const previewParts = splitQueuedMessage(bulkText);
+                    return previewParts.length ? (
+                      previewParts.map((part, index) => (
+                        <div className="whatsappPreviewBubble" key={`preview-${index}`}>
+                          {previewParts.length > 1 ? (
+                            <span className="whatsappPreviewPartLabel">Message {index + 1}</span>
+                          ) : null}
+                          <div className="whatsappPreviewText">{renderWhatsAppFormatting(part)}</div>
+                          <span className="whatsappPreviewTime">now</span>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="whatsappPreviewEmpty">Your message preview will appear here.</p>
+                    );
+                  })()}
+                </div>
+                <p className="whatsappPreviewNote">
+                  Uses *bold*, _italic_, ~strikethrough~, and backticks for monospace.
+                </p>
+              </aside>
             </div>
             {bulkFile ? (
               <div className="fileChip">
@@ -1360,7 +1436,8 @@ export default function Home() {
               Recipient file columns: `Mobile Number` or `phone`, optional `text`, and optional
               `ImageURL`. Message templates can use placeholders like {"{Name}"} or{" "}
               {"{Mobile Number}"}. Add `/br` anywhere in the message to send the text before and
-              after it as separate messages within the same queue item.
+              after it as separate messages within the same queue item. WhatsApp formatting: *bold*,
+              _italic_, ~strikethrough~, and `monospace`.
             </p>
           </section>
         </TabsContent>
@@ -1457,41 +1534,65 @@ export default function Home() {
           </TabsList>
         </Tabs>
         <div className="queueList">
-          {filteredQueue.slice(0, 80).map((item) => (
-            <div className={`queueItem ${item.status}`} key={item.id}>
-              <div>
-                <strong>{item.phone}</strong>
-                <span>{item.text || item.file?.fileName || "No text"}</span>
-              </div>
-              <div>
-                <span>{item.file ? item.file.fileName : item.url ? item.url : "text"}</span>
-                <span>{item.status} · attempts {item.attempts}</span>
-                {item.partsTotal && item.partsTotal > 1 ? (
-                  <span>{item.partsSent || 0}/{item.partsTotal} message parts sent</span>
-                ) : null}
-                {item.lastError ? <span>{item.lastError}</span> : null}
-                <div className="itemActions">
-                  {item.status === "failed" ? (
-                    <Button size="sm" variant="secondary" onClick={() => requeueItem(item.id)}>
-                      Requeue
-                    </Button>
+          {filteredQueue.slice(0, 80).map((item) => {
+            const messageParts = splitQueuedMessage(item.text);
+
+            return (
+              <div className={`queueItem ${item.status}`} key={item.id}>
+                <div className="queueMessageColumn">
+                  <strong className="queueRecipient">{item.phone}</strong>
+                  {messageParts.length ? (
+                    <div className="queueMessageList">
+                      {messageParts.map((part, index) => (
+                        <details
+                          className={`queueMessagePart ${messageParts.length > 1 ? "multipart" : ""}`}
+                          key={`${item.id}-${index}`}
+                        >
+                          <summary>
+                            {messageParts.length > 1 ? (
+                              <span className="queuePartLabel">Message {index + 1}</span>
+                            ) : null}
+                            <span className="queueMessagePreview">{part}</span>
+                            <span className="queueExpandLabel" aria-hidden="true" />
+                          </summary>
+                          <div className="queueMessageFull">{part}</div>
+                        </details>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="queueMessageEmpty">{item.file?.fileName || "No text"}</div>
+                  )}
+                </div>
+                <div className="queueItemMeta">
+                  <span>{item.file ? item.file.fileName : item.url ? item.url : "text"}</span>
+                  <span>{item.status} · attempts {item.attempts}</span>
+                  {item.partsTotal && item.partsTotal > 1 ? (
+                    <span>{item.partsSent || 0}/{item.partsTotal} message parts sent</span>
                   ) : null}
-                  {item.file ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => removeQueueItemAttachment(item.id)}
-                    >
-                      Drop File
+                  {item.lastError ? <span>{item.lastError}</span> : null}
+                  <div className="itemActions">
+                    {item.status === "failed" ? (
+                      <Button size="sm" variant="secondary" onClick={() => requeueItem(item.id)}>
+                        Requeue
+                      </Button>
+                    ) : null}
+                    {item.file ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => removeQueueItemAttachment(item.id)}
+                      >
+                        Drop File
+                      </Button>
+                    ) : null}
+                    <Button size="sm" variant="outline" onClick={() => removeQueueItem(item.id)}>
+                      Remove
                     </Button>
-                  ) : null}
-                  <Button size="sm" variant="outline" onClick={() => removeQueueItem(item.id)}>
-                    Remove
-                  </Button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           {!queue.length ? <div className="emptyQueue">No messages queued</div> : null}
           {queue.length && !filteredQueue.length ? (
             <div className="emptyQueue">No {queueFilter} messages</div>

@@ -104,6 +104,114 @@ h2 {
   gap: 8px;
 }
 
+.messageEditorWithPreview {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+  align-items: start;
+  gap: 16px;
+}
+
+.whatsappPreview {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--input);
+}
+
+.whatsappPreviewHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+.whatsappPreviewHeader span,
+.whatsappPreviewNote,
+.whatsappPreviewEmpty {
+  color: var(--muted);
+}
+
+.whatsappPreviewHeader span {
+  font-size: 11px;
+}
+
+.whatsappPreviewChat {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  min-height: 210px;
+  max-height: 390px;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 7px;
+  background-color: #101a16;
+  background-image: radial-gradient(#26332d 0.7px, transparent 0.7px);
+  background-size: 13px 13px;
+}
+
+.whatsappPreviewBubble {
+  display: grid;
+  justify-self: end;
+  gap: 4px;
+  width: fit-content;
+  max-width: min(100%, 520px);
+  padding: 9px 11px 6px;
+  border-radius: 10px 10px 3px 10px;
+  background: #1d382e;
+  box-shadow: 0 1px 1px #0004;
+}
+
+.whatsappPreviewText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  line-height: 1.45;
+  font-size: 13px;
+}
+
+.whatsappPreviewText code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: #101a16;
+  color: #d7e9df;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 0.92em;
+}
+
+.whatsappPreviewText .whatsappCodeBlock {
+  display: block;
+  padding: 7px;
+  white-space: pre-wrap;
+}
+
+.whatsappPreviewPartLabel {
+  color: #a8c8b8;
+  font-size: 10px;
+}
+
+.whatsappPreviewTime {
+  justify-self: end;
+  color: #a8c8b8;
+  font-size: 10px;
+}
+
+.whatsappPreviewEmpty {
+  align-self: center;
+  justify-self: center;
+  margin: 0;
+  font-size: 12px;
+  text-align: center;
+}
+
+.whatsappPreviewNote {
+  margin: 9px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .checkRow {
   display: inline-flex;
   align-items: center;
@@ -309,23 +417,125 @@ h2 {
 
 .queueItem {
   display: grid;
-  grid-template-columns: minmax(180px, 0.8fr) minmax(220px, 1.2fr);
-  gap: 12px;
+  grid-template-columns: minmax(0, 1.6fr) minmax(190px, 0.7fr);
+  align-items: start;
+  gap: 16px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 12px;
+  border-radius: 12px;
+  padding: 14px;
   background: var(--input);
 }
 
 .queueItem > div {
   display: grid;
-  gap: 5px;
+  align-content: start;
+  gap: 8px;
   min-width: 0;
 }
 
 .queueItem span {
   color: var(--muted);
   overflow-wrap: anywhere;
+}
+
+.queueMessageColumn {
+  min-width: 0;
+}
+
+.queueRecipient {
+  overflow-wrap: anywhere;
+  font-size: 15px;
+}
+
+.queueMessageList {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 3px;
+}
+
+.queueMessagePart {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-strong);
+}
+
+.queueMessagePart summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.queueMessagePart.multipart summary {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.queueMessagePart summary::-webkit-details-marker {
+  display: none;
+}
+
+.queueMessagePreview {
+  min-width: 0;
+  color: var(--text) !important;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.queuePartLabel {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent) !important;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.queueExpandLabel {
+  color: var(--focus) !important;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.queueExpandLabel::after {
+  content: "Show";
+}
+
+.queueMessagePart[open] .queueExpandLabel::after {
+  content: "Hide";
+}
+
+.queueMessageFull {
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  color: var(--text);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  scrollbar-color: var(--line) transparent;
+}
+
+.queueMessageEmpty {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.queueItemMeta {
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .itemActions {
@@ -431,6 +641,7 @@ pre {
   .topbar,
   .settings,
   .formGrid,
+  .messageEditorWithPreview,
   .queueHeader,
   .queueItem {
     grid-template-columns: 1fr;

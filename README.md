@@ -252,7 +252,9 @@ Mobile Number,Name,text,ImageURL
 
 The dashboard replaces `{Column Name}` with values from each row. `Mobile Number` is supported. For numbers outside Singapore, include the full number with its country code, such as `+1 202 555 0123`. Eight-digit Singapore numbers without `+65` are prefixed automatically. Without headers, column 1 is treated as the phone number and column 2 as the message. A row's `ImageURL` is used unless you choose a shared attachment.
 
-In the dashboard queue, use `/br` to send separate WhatsApp messages to the same recipient, for example `First message /br Second message`. All parts stay together as one queue item and send in order, with the configured per-message delay between them. The batch wait is applied after the complete `/br` group, so it cannot pause between its parts. The immediate `POST /send` endpoint sends its text as provided and does not interpret `/br`.
+In the dashboard queue, use `/br` to send separate WhatsApp messages to the same recipient, for example `First message /br Second message`. All parts stay together as one queue item and send in order without the configured per-message delay between them. The batch wait is applied after the complete `/br` group, so it cannot pause between its parts. The immediate `POST /send` endpoint sends its text as provided and does not interpret `/br`.
+
+The bulk message editor includes a live preview for WhatsApp text formatting. Type `*bold*`, `_italic_`, `~strikethrough~`, `` `monospace` ``, or a triple-backtick code block. Bailey sends these markers as written; WhatsApp renders the formatting in the chat. `/br` parts appear as separate bubbles in the preview.
 
 ## Endpoints
 

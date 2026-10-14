@@ -791,7 +791,8 @@ async function sendQueuedItem(item) {
     await saveQueueStore();
 
     if (index < parts.length - 1) {
-      await waitWhileQueueActive(queueSettings.messageDelayMs);
+      // /br parts are an intentional sequence; skip the normal pacing delay
+      // here and only honor an explicit queue pause between parts.
       if (queuePaused) {
         return { status: 409, body: { ok: false, error: "Queue paused" } };
       }
