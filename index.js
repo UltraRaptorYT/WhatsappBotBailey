@@ -939,10 +939,8 @@ app.post("/queue/remove", requireAdmin, async (req, res, next) => {
     return res.status(404).json({ ok: false, error: "Queue item not found" });
   }
 
-  if (item.status === "sending") {
-    return res.status(409).json({ ok: false, error: "A message currently being sent cannot be removed" });
-  }
-
+  // The WhatsApp request itself may already be in flight, but remove the item
+  // from the durable queue so it cannot reappear on the next queue save.
   sendQueue = sendQueue.filter((entry) => entry.id !== id);
   try { await saveQueueStore(); } catch (error) { return next(error); }
   res.json(getQueueSnapshot());
@@ -953,7 +951,7 @@ app.post("/queue/clear", requireAdmin, async (req, res, next) => {
   const removableStatuses = new Set(["sent", "failed"]);
 
   if (req.body?.all) {
-    sendQueue = sendQueue.filter((item) => item.status === "sending");
+    sendQueue = [];
   } else if (status && removableStatuses.has(status)) {
     sendQueue = sendQueue.filter((item) => item.status !== status);
   }

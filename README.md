@@ -204,6 +204,8 @@ print(response.json())
 
 For large batches, use the dashboard queue. It persists in Supabase, can be paused/resumed, and applies the configured pacing between sends.
 
+Use **Remove** or **Clear All** in the dashboard to delete queue items. The bot keeps the queue in memory while it is running and saves the whole queue back to `baileys_queue`, so deleting the Supabase row directly can cause it to be recreated. Removing an item marked `sending` removes it from the queue, though a WhatsApp send already in progress may still complete.
+
 ## 5. Keep the Render Free service awake (optional)
 
 This repository includes `.github/workflows/keepalive.yml`, which requests `/health` every five minutes. The workflow currently uses `https://whatsappbotbailey.onrender.com`. If your Render URL is different, edit that workflow to use your service URL and push the change to GitHub.
